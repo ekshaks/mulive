@@ -42,6 +42,7 @@ def mount_voice(
         path=websocket_path,
         run_session=run_session,
         principal_resolver=principal_resolver or local_principal,
+        handler_factory=lambda _principal: runtime.create_handler(),
     )
     if serve_client:
         client_dir = Path(__file__).resolve().parents[1] / "client" / "embed"

@@ -93,6 +93,40 @@ class TTSFlow:
         )
 
 
+class VoiceRuntime:
+    """Application-scoped STT/TTS resources and session runner lifecycle."""
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        config = config or {}
+        vad_config = dict(config.get("vad") or {})
+        self.vad_backend = str(vad_config.get("backend") or "").strip().lower()
+        if self.vad_backend and self.vad_backend not in {"torch", "onnx"}:
+            raise ValueError("vad.backend must be 'torch' or 'onnx'")
+        self.stt_flow = STTFlow(config.get("stt"))
+        self.tts_flow = TTSFlow(config.get("tts"))
+
+    async def prepare(self) -> None:
+        if self.vad_backend:
+            os.environ.setdefault("SILERO_BACKEND", self.vad_backend)
+        await asyncio.gather(self.stt_flow.wait_ready(), asyncio.to_thread(warm_up_vad))
+
+    def create_session_runner(self, handler_factory, *, greeting: str | None = None):
+        async def run_session(session):
+            if session.pipeline is None:
+                session.set_handler(handler_factory())
+            await session.wait_until_ready()
+            if greeting is not None:
+                await session.speak_standalone(greeting)
+            await session.closed.wait()
+
+        run_session.prepare = self.prepare
+        run_session.close = self.aclose
+        return run_session
+
+    async def aclose(self) -> None:
+        await self.stt_flow.aclose()
+
+
 class EmbedVoiceHandler:
     """Per-session composition of independent STT and TTS flows."""
 
@@ -137,37 +171,18 @@ class EmbedVoiceHandler:
                 await close()
 
 
-class EmbedRuntime:
+class EmbedRuntime(VoiceRuntime):
     """Shared provider lifecycle and per-WebSocket handler creation."""
 
     def __init__(self, config: dict[str, Any] | None = None, on_transcript: TranscriptCallback | None = None) -> None:
-        config = config or {}
-        vad_config = dict(config.get("vad") or {})
-        self.vad_backend = str(vad_config.get("backend") or "").strip().lower()
-        if self.vad_backend and self.vad_backend not in {"torch", "onnx"}:
-            raise ValueError("vad.backend must be 'torch' or 'onnx'")
-        self.stt_flow = STTFlow(config.get("stt"))
-        self.tts_flow = TTSFlow(config.get("tts"))
+        super().__init__(config)
         self.on_transcript = on_transcript
 
     async def wait_ready(self) -> None:
-        if self.vad_backend:
-            os.environ.setdefault("SILERO_BACKEND", self.vad_backend)
-        await asyncio.gather(self.stt_flow.wait_ready(), asyncio.to_thread(warm_up_vad))
+        await self.prepare()
 
     def create_handler(self) -> EmbedVoiceHandler:
         return EmbedVoiceHandler(self.stt_flow, self.tts_flow, self.on_transcript)
 
     def create_session_runner(self):
-        async def run_session(session):
-            handler = self.create_handler()
-            session.set_handler(handler)
-            try:
-                await session.closed.wait()
-            finally:
-                await handler.aclose()
-
-        return run_session
-
-    async def aclose(self) -> None:
-        await self.stt_flow.aclose()
+        return super().create_session_runner(self.create_handler)

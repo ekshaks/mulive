@@ -37,6 +37,7 @@ def mount_voice_transport(
     path: str,
     run_session: Callable[[VoiceSession], Awaitable[Any]],
     principal_resolver: PrincipalResolver,
+    handler_factory: Callable[[VoicePrincipal], Any] | None = None,
 ) -> FastAPI:
     """Mount the protocol loop and application/session lifecycle hooks."""
     if not path.startswith("/") or path == "/":
@@ -65,7 +66,21 @@ def mount_voice_transport(
             return
         await websocket.accept()
         logger.info("voice socket accepted client=%s subject=%s", websocket.client, principal.subject)
-        session = VoiceSession(principal, None, websocket.send_json, websocket.send_bytes)
+        # Bind before the receive loop starts so hello followed immediately by
+        # PCM cannot commit a turn against an unbound handler.
+        handler = None
+        try:
+            handler = handler_factory(principal) if handler_factory is not None else None
+            session = VoiceSession(principal, handler, websocket.send_json, websocket.send_bytes)
+        except Exception:
+            if handler is not None:
+                close = getattr(handler, "aclose", None)
+                if close is not None:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+            await websocket.close(code=1011, reason="voice handler unavailable")
+            return
         runner_task = asyncio.create_task(run_session(session), name="voice-session-runner")
         try:
             while True:

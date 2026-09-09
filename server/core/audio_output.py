@@ -38,6 +38,14 @@ class AudioChunk:
             raise ValueError("AudioChunk samples must contain complete channel frames")
 
 
+@dataclass(frozen=True)
+class SpeechResult:
+    """Independent delivery facts for response text and synthesized audio."""
+
+    text_delivered: bool
+    audio_completed: bool
+
+
 @runtime_checkable
 class AudioOutput(Protocol):
     # ISC: R1 R2 T1 T2 I_SAFE I_AUTH I_LIVE I_FRESH I_ATOMIC
