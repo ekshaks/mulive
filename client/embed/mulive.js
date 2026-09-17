@@ -26,10 +26,11 @@ function pcm16(samples, sourceRate) {
 }
 
 export class VoiceClient {
-  constructor(path, { mode = "ptt" } = {}) {
+  constructor(path, { mode = "ptt", onPcm = null } = {}) {
     if (!["ptt", "vad"].includes(mode)) throw new Error("mode must be 'ptt' or 'vad'");
     this.path = path;
     this.mode = mode;
+    this.onPcm = onPcm;
     this.ws = null;
     this.listeners = new Map();
     this.audioContext = null;
@@ -114,7 +115,9 @@ export class VoiceClient {
     this.captureNode = new AudioWorkletNode(audioContext, "mulive-pcm");
     this.captureNode.port.onmessage = ({ data }) => {
       if (!this.captureTurn || this.ws?.readyState !== WebSocket.OPEN) return;
-      this.ws.send(pcm16(data, audioContext.sampleRate));
+      const payload = pcm16(data, audioContext.sampleRate);
+      this.onPcm?.(payload);
+      this.ws.send(payload);
     };
     source.connect(this.captureNode);
     this.captureNode.connect(audioContext.destination);
@@ -178,6 +181,11 @@ export class VoiceClient {
   send(event) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error("voice is not connected");
     this.ws.send(JSON.stringify(event));
+  }
+
+  sendPCM(buffer) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error("voice is not connected");
+    this.ws.send(buffer);
   }
 
   playPCM(buffer) {

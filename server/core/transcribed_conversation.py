@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,7 @@ class ConversationTurnProcessor:
             if inspect.isawaitable(reply):
                 reply = await reply
         except Exception:
+            logger.exception("Riley conversation/controller turn failed")
             if self._recovery_text is None:
                 raise
             reply = ConversationReply(self._recovery_text)
@@ -87,7 +92,9 @@ class WebSocketTurnHandler:
             return
         try:
             result = await self._session.speak(reply.text)
-        except BaseException:
+        except BaseException as exc:
+            if not isinstance(exc, asyncio.CancelledError):
+                logger.exception("Riley voice handler turn failed")
             await self.conversation.report_delivery(reply, False)
             raise
         await self.conversation.report_delivery(reply, result.text_delivered)
