@@ -3,7 +3,6 @@ aiohttp
 fastapi
 uvicorn
 pydub
-pyaudio
 asyncio
 reactivex
 openai
@@ -13,7 +12,6 @@ faster-whisper
 google-genai
 PyYAML
 pillow
-librosa
 silero-vad
 onnxruntime
 kokoro-onnx

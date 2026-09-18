@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mulive"
+version = "0.1.0"
+description = "Local-first, interactive voice and multimodal applications in Python"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Mulive contributors" }]
+dependencies = [
+  "aiohttp>=3.9",
+  "aiortc>=1.9",
+  "faster-whisper>=1.0",
+  "numpy>=1.26",
+  "onnxruntime>=1.17",
+  "Pillow>=10",
+  "piper-tts>=1.2",
+  "PyYAML>=6",
+  "reactivex>=4",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.115", "uvicorn>=0.30"]
+mlx = ["mlx-whisper; platform_system == 'Darwin' and platform_machine == 'arm64'"]
+groq = ["groq"]
+openai = ["openai"]
+gemini = ["google-genai"]
+kokoro = ["kokoro-onnx"]
+local-audio = ["sounddevice", "pywebrtc-audio"]
+
+[project.urls]
+Homepage = "https://github.com/ekshaks/mulive"
+Repository = "https://github.com/ekshaks/mulive"
+Issues = "https://github.com/ekshaks/mulive/issues"
+
+[tool.setuptools.packages.find]
+include = ["mulive*"]
+
+[tool.setuptools.package-data]
+mulive = [
+  "client/**/*.css",
+  "client/**/*.html",
+  "client/**/*.js",
+  "client/assets/*",
+  "quickstart/**/*.css",
+  "quickstart/**/*.html",
+  "quickstart/**/*.js",
+  "quickstart/**/*.yml",
+]

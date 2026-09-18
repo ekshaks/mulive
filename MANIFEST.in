@@ -1,0 +1,10 @@
+include docs/assets/mulive-hero.png
+
+prune .agents
+prune .codex
+prune archive
+prune data
+prune ext
+prune muapps
+prune tests
+prune tmp
