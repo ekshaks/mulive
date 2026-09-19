@@ -1,16 +1,15 @@
 import asyncio
 import os
+import time
 import uuid
 
 import numpy as np
 import reactivex
 from reactivex.disposable import CompositeDisposable, Disposable
 from reactivex.scheduler.eventloop import AsyncIOScheduler
-import time
-from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
-from .turn_source import SpeechStarted, VoiceTurn
+from .turn import SpeechStarted, TurnEvent, VoiceTurn
 
 # Singleton instances
 _VAD_MODEL = None
@@ -241,12 +240,124 @@ def get_vad_model() -> Tuple[Any, Any]:
     return _VAD_MODEL, _VAD_UTILS
 
 
+class TurnDetector:
+    """Detect and collect one user turn from arbitrary PCM16 chunks.
 
-@dataclass(frozen=True)
-class VadEmission:
-    segment: Optional[np.ndarray] = None
-    speech_started: Optional[SpeechStarted] = None
-    turn: Optional[VoiceTurn] = None
+    The detector contains the transport-independent turn rules. Transports
+    choose how to schedule :meth:`flush_if_ready` and how to deliver events.
+    """
+
+    def __init__(
+        self,
+        is_speech: Callable[[np.ndarray], bool],
+        *,
+        silence_timeout: float = 1.0,
+        max_samples: int | None = 16_000 * 60,
+        analysis_samples: int = 1_600,
+    ) -> None:
+        self.is_speech = is_speech
+        self.silence_timeout = silence_timeout
+        self.max_samples = max_samples
+        self.analysis_samples = analysis_samples
+        self._analysis = np.empty(0, dtype=np.int16)
+        self._buffer: list[np.ndarray] = []
+        self._turn_id: str | None = None
+        self._last_speech_time = 0.0
+        self._samples = 0
+
+    @property
+    def turn_id(self) -> str | None:
+        """Return the active turn identifier, if speech is being buffered."""
+        return self._turn_id
+
+    def feed(self, chunk: np.ndarray) -> list[TurnEvent]:
+        """Process one PCM16 chunk and return any immediate detector events."""
+        samples = np.asarray(chunk, dtype=np.int16).reshape(-1)
+        if not samples.size:
+            return []
+        self._analysis = np.concatenate((self._analysis, samples))
+        events: list[TurnEvent] = []
+        while self._analysis.size >= self.analysis_samples:
+            frame = self._analysis[: self.analysis_samples]
+            self._analysis = self._analysis[self.analysis_samples :]
+            events.extend(self._process_frame(frame))
+        return events
+
+    def flush_if_ready(self, *, force: bool = False) -> list[TurnEvent]:
+        """Complete the active turn when its endpoint timeout has elapsed."""
+        if not force and (
+            self._turn_id is None
+            or time.monotonic() - self._last_speech_time < self.silence_timeout
+        ):
+            return []
+        events = self._process_remainder()
+        if not force and self._turn_id is not None:
+            if time.monotonic() - self._last_speech_time < self.silence_timeout:
+                return events
+        completed = self._complete()
+        if completed is not None:
+            events.append(completed)
+        return events
+
+    def cancel(self) -> None:
+        """Discard buffered and unanalyzed audio."""
+        self._analysis = np.empty(0, dtype=np.int16)
+        self._buffer.clear()
+        self._turn_id = None
+        self._samples = 0
+        self._last_speech_time = 0.0
+
+    def _process_remainder(self) -> list[TurnEvent]:
+        if not self._analysis.size:
+            return []
+        frame = self._analysis
+        self._analysis = np.empty(0, dtype=np.int16)
+        padded = np.pad(frame, (0, self.analysis_samples - frame.size))
+        if self.is_speech(padded):
+            return self._accept_speech(frame)
+        return self._accept_silence(frame)
+
+    def _process_frame(self, frame: np.ndarray) -> list[TurnEvent]:
+        if self.is_speech(frame):
+            return self._accept_speech(frame)
+        return self._accept_silence(frame)
+
+    def _accept_speech(self, samples: np.ndarray) -> list[TurnEvent]:
+        events: list[TurnEvent] = []
+        if self._turn_id is None:
+            self._turn_id = uuid.uuid4().hex
+            events.append(SpeechStarted(self._turn_id))
+        if self.max_samples is not None and self._samples + samples.size > self.max_samples:
+            completed = self._complete()
+            if completed is not None:
+                events.append(completed)
+            self._turn_id = uuid.uuid4().hex
+            events.append(SpeechStarted(self._turn_id))
+        self._buffer.append(samples.copy())
+        self._samples += samples.size
+        self._last_speech_time = time.monotonic()
+        return events
+
+    def _accept_silence(self, samples: np.ndarray) -> list[TurnEvent]:
+        if self._turn_id is None:
+            return []
+        if self.max_samples is not None and self._samples + samples.size > self.max_samples:
+            completed = self._complete()
+            return [completed] if completed is not None else []
+        self._buffer.append(samples.copy())
+        self._samples += samples.size
+        return []
+
+    def _complete(self) -> VoiceTurn | None:
+        if self._turn_id is None or not self._buffer:
+            return None
+        audio = np.concatenate(self._buffer, axis=0)
+        turn = VoiceTurn(self._turn_id, audio.astype("<i2", copy=False).tobytes())
+        self._buffer.clear()
+        self._turn_id = None
+        self._samples = 0
+        self._last_speech_time = 0.0
+        return turn
 
 
 def _build_is_speech(
@@ -306,35 +417,28 @@ def turn_detector_vad(
                 "event loop; its poll timer is scheduled on that loop."
             ) from None
 
-        buffer = []
-        turn = [None]
-        last_speech_time = [0.0]
         disposed = [False]
+        detector = TurnDetector(
+            is_speech,
+            silence_timeout=silence_timeout,
+        )
 
         def process_chunk(chunk: np.ndarray):
             if disposed[0]:
                 return
-            if is_speech(chunk):
-                if not buffer:
-                    turn[0] = VoiceTurn(uuid.uuid4().hex)
+            for event in detector.feed(chunk):
+                if isinstance(event, SpeechStarted):
                     print("[interrupt] VAD SPEECH_START")
-                    observer.on_next(VadEmission(speech_started=SpeechStarted(turn[0])))
-                buffer.append(chunk)
-                last_speech_time[0] = time.monotonic()
+                observer.on_next(event)
 
-        def emit_segment_if_ready(force: bool = False):
-            if disposed[0] or not buffer:
+        def emit_turn_if_ready(force: bool = False):
+            if disposed[0]:
                 return
-            if not force and (time.monotonic() - last_speech_time[0]) < silence_timeout:
-                return
-            segment = np.concatenate(buffer, axis=0)
-            buffer.clear()
-            completed_turn = turn[0].with_pcm16(segment.tobytes())
-            observer.on_next(VadEmission(segment=segment, turn=completed_turn))
-            turn[0] = None
+            for event in detector.flush_if_ready(force=force):
+                observer.on_next(event)
 
         def on_completed():
-            emit_segment_if_ready(force=True)
+            emit_turn_if_ready(force=True)
             observer.on_completed()
 
         source_sub = audio_observable.subscribe(
@@ -344,10 +448,11 @@ def turn_detector_vad(
         )
         timer_sub = reactivex.interval(
             poll_interval, scheduler=AsyncIOScheduler(loop)
-        ).subscribe(lambda _: emit_segment_if_ready())
+        ).subscribe(lambda _: emit_turn_if_ready())
 
         def dispose():
             disposed[0] = True
+            detector.cancel()
 
         return CompositeDisposable(source_sub, timer_sub, Disposable(dispose))
 

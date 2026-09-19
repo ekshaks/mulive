@@ -7,14 +7,13 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 
-from server.core.audio_output import AudioChunk, AudioOutput
-from server.core.pipeline_helpers import _make_tts_provider, add_tts
-from server.core.session import SessionContext
-from server.core.tts_providers.factory import TTSConfig, create_tts_provider
-from server.core.tts_providers import kokoro_fastapi, kokoro_onnx, piper
-from server.core.webrtc_audio import AssistantAudioTrack
-from server.core.websocket_audio import WebSocketPCMOutput
-from server.setup_tracks import pc_session_setup
+from mulive.core.audio_output import AudioChunk, AudioOutput
+from mulive.core.session import SessionContext
+from mulive.core.tts_providers.factory import TTSConfig, create_tts_provider
+from mulive.core.tts_providers import kokoro_fastapi, kokoro_onnx, piper
+from mulive.core.webrtc_audio import AssistantAudioTrack
+from mulive.core.websocket_audio import WebSocketPCMOutput
+from mulive.server.setup_tracks import pc_session_setup
 
 
 class FakeAudioOutput:
@@ -103,13 +102,6 @@ class AudioOutputTests(unittest.TestCase):
         self.assertIs(session.audio_output, output)
         self.assertIs(session.assistant_audio_track, output)
 
-    def test_provider_receives_audio_output_without_peer_connection(self):
-        output = FakeAudioOutput()
-
-        provider = _make_tts_provider("piper", "webrtc", audio_output=output)
-
-        self.assertIs(provider.audio_track, output)
-
     def test_factory_receives_audio_output_without_peer_connection(self):
         output = FakeAudioOutput()
 
@@ -145,17 +137,6 @@ class AudioOutputTests(unittest.TestCase):
                 audio_track=FakeAudioOutput(),
             )
 
-    def test_browser_tts_rejects_transport_object_without_audio_contract(self):
-        with self.assertRaisesRegex(TypeError, "AudioOutput"):
-            add_tts(
-                stream=None,
-                audio_output=SimpleNamespace(assistant_audio_track=FakeAudioOutput()),
-                turn_signals=None,
-                subs=None,
-                mode="browser",
-            )
-
-
 class WebRTCAudioOutputTests(unittest.IsolatedAsyncioTestCase):
     async def test_concrete_outputs_satisfy_drain_contract(self):
         async def send_bytes(_payload):
@@ -187,8 +168,8 @@ class WebRTCAudioOutputTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         with (
-            patch("server.setup_tracks.RTCPeerConnection", FakePeer),
-            patch("server.setup_tracks.AssistantAudioTrack", FakeAudioOutput),
+            patch("mulive.server.setup_tracks.RTCPeerConnection", FakePeer),
+            patch("mulive.server.setup_tracks.AssistantAudioTrack", FakeAudioOutput),
         ):
             peer = pc_session_setup(run_session, config={})
             await asyncio.sleep(0)

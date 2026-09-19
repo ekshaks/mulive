@@ -6,10 +6,24 @@ from ..audio_output import AudioOutput
 
 @dataclass
 class TTSConfig:
-    provider: Literal["kokoro_fastapi", "kokoro_onnx", "piper", "gemini"] = "kokoro_fastapi"
-    output: Literal["local", "webrtc"] = "local"
+    """Synthesis choice; ``mode`` names the user-facing output location."""
+
+    provider: Literal["kokoro_fastapi", "kokoro_onnx", "piper", "gemini"] = "kokoro_onnx"
+    mode: Literal["local", "browser"] = "local"
     voice: Optional[str] = None
     model: Optional[str] = None
+    output: Optional[Literal["local", "webrtc"]] = None  # Legacy transport name.
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"kokoro_fastapi", "kokoro_onnx", "piper", "gemini"}:
+            raise ValueError(f"Unknown TTS provider: {self.provider}")
+        if self.output is not None:
+            legacy_mode = {"local": "local", "webrtc": "browser"}.get(self.output)
+            if legacy_mode is None:
+                raise ValueError(f"Unknown TTS output: {self.output}")
+            self.mode = legacy_mode
+        if self.mode not in {"local", "browser"}:
+            raise ValueError(f"Unknown TTS mode: {self.mode}")
 
 
 def create_tts_provider(
@@ -25,7 +39,7 @@ def create_tts_provider(
         raise ValueError("Provide only one audio output")
     if audio_output is None:
         audio_output = pcm_output if pcm_output is not None else audio_track
-    output_mode = "webrtc" if config.output == "webrtc" else "local"
+    output_mode = "webrtc" if config.mode == "browser" else "local"
     pcm_providers = {"kokoro_fastapi", "kokoro_onnx", "piper"}
     if (
         output_mode == "webrtc"
@@ -57,3 +71,17 @@ def create_tts_provider(
             voice=config.voice or "Kore",
         )
     raise ValueError(f"Unknown TTS provider: {config.provider}")
+
+
+def create_session_tts_provider(session, subs, config: TTSConfig | None):
+    """Create session-bound TTS and register its cleanup."""
+    if config is None:
+        return None
+    provider = create_tts_provider(
+        config,
+        audio_output=session.audio_output if config.mode == "browser" else None,
+    )
+    close = getattr(provider, "aclose", None)
+    if close is not None:
+        subs.add_async_close(close)
+    return provider

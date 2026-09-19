@@ -16,13 +16,13 @@ from unittest.mock import patch
 
 import yaml
 
-from server.apps.config_merge import (
+from mulive.apps.config_merge import (
     active_profiles,
     deep_merge,
     merge_all,
 )
-from server.apps.loader import load_app_catalog
-from server.apps.show_config import main as show_config_main
+from mulive.apps.loader import load_app_catalog
+from mulive.apps.show_config import main as show_config_main
 
 
 def _write(path: Path, content: str) -> None:
@@ -119,7 +119,7 @@ class LoaderProfileTests(unittest.TestCase):
             defaults:
               server: {https: true, host: 0.0.0.0, port: 9000}
               stt: {provider: mlx, model_size: turbo}
-              tts: {enabled: true, provider: kokoro}
+              tts: {enabled: true, provider: kokoro_onnx}
             apps:
               - path: demo
             """,
@@ -132,7 +132,7 @@ class LoaderProfileTests(unittest.TestCase):
               provider: faster_whisper
               model_size: base
               kwargs: {compute_type: int8, cpu_threads: 1}
-            tts: {provider: kokoro_onnx}
+            tts: {provider: kokoro_fastapi}
             """,
         )
         catalog.write_bundle(
@@ -155,7 +155,7 @@ class LoaderProfileTests(unittest.TestCase):
             demo = registry.get("demo")
             self.assertEqual(demo.config["stt"]["provider"], "mlx")
             self.assertEqual(demo.config["stt"]["model_size"], "turbo")
-            self.assertEqual(demo.config["tts"]["provider"], "kokoro")
+            self.assertEqual(demo.config["tts"]["provider"], "kokoro_onnx")
             self.assertTrue(demo.config["server"]["https"])
             self.assertEqual(demo.config["app"]["name"], "demo")
             # Catalog-level merged infra is exposed at the top level.
@@ -175,8 +175,8 @@ class LoaderProfileTests(unittest.TestCase):
                 demo.config["stt"]["kwargs"],
                 {"compute_type": "int8", "cpu_threads": 1},
             )
-            self.assertEqual(demo.config["tts"]["provider"], "kokoro_onnx")
-            # config.aws.yml overrode server.debug on top of everything:
+            self.assertEqual(demo.config["tts"]["provider"], "kokoro_fastapi")
+            # config.aws.yml overrode mulive.debug on top of everything:
             self.assertTrue(demo.config["server"]["debug"])
             # App-specific keys still there:
             self.assertEqual(demo.config["ocr"]["debug"], True)

@@ -2,9 +2,18 @@
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
+# Poetry 1.x needs this legacy metadata only to publish prebuilt artifacts with
+# its stored PyPI token. Keep name/version in sync with [project].
+[tool.poetry]
+name = "mulive"
+version = "0.1.0rc1"
+description = "Local-first, interactive voice and multimodal applications in Python"
+authors = ["Mulive contributors"]
+readme = "README.md"
+
 [project]
 name = "mulive"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Local-first, interactive voice and multimodal applications in Python"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"

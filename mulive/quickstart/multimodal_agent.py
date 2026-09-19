@@ -4,7 +4,7 @@ from pathlib import Path
 
 from mulive.core.llm_utils import call_llm, create_agent
 from mulive.core.multimodal_pipeline import WebRTCVoiceTurnRunner
-from mulive.core.pipeline_helpers import make_tts_provider
+from mulive.core.tts_providers import TTSConfig, create_tts_provider
 from mulive.core.stream_dsl import Stream, SubGroup, final_transcripts, stt, turn_detector
 from mulive.core.server_config import web_config
 from mulive._resources import packaged_path
@@ -31,11 +31,12 @@ async def run_multimodal_session(
     """Compose the generic voice core for the visual quickstart demo."""
     await session.wait_until_ready()
     subs = SubGroup()
+    tts_config = TTSConfig(provider=tts_provider, mode=tts_mode) if tts_mode else None
     latest_frame = Stream.source(session.video_input, name="video").latest(
         name="latest_frame", subs=subs
     )
     turn = Stream.source(session.audio_input, name="audio") | turn_detector()
-    transcripts = turn.turns | stt(
+    transcripts = turn.value | stt(
         provider=stt_provider,
         model=stt_model,
         model_size=stt_model_size,
@@ -54,14 +55,10 @@ async def run_multimodal_session(
         return await call_llm(agent, text, latest_frame.get(), mode)
 
     tts = None
-    if tts_mode is not None:
-        output_mode = {"local": "local", "browser": "webrtc"}.get(tts_mode)
-        if output_mode is None:
-            raise ValueError(f"Unknown TTS mode: {tts_mode}")
-        tts = make_tts_provider(
-            tts_provider,
-            output_mode,
-            session.audio_output if output_mode == "webrtc" else None,
+    if tts_config is not None:
+        tts = create_tts_provider(
+            tts_config,
+            audio_output=session.audio_output if tts_config.mode == "browser" else None,
         )
 
     async def speak(text, cancelled, _audio_output):
@@ -69,8 +66,8 @@ async def run_multimodal_session(
             await tts.speak(text, cancelled)
 
     runner = WebRTCVoiceTurnRunner(session=session, answer=answer, speak=speak)
-    turn.events.to(
-        lambda stream: stream.subscribe(runner.on_vad_event),
+    turn.started.to(
+        lambda stream: stream.subscribe(runner.on_speech_started),
         name="quickstart_barge_in",
         subs=subs,
     )
@@ -96,7 +93,7 @@ async def run_session(
     session,
     mode="av",
     tts_mode=None,
-    tts_provider="kokoro_fastapi",
+    tts_provider="kokoro_onnx",
     stt_model_size="tiny",
     stt_provider="mlx",
     stt_model=None,

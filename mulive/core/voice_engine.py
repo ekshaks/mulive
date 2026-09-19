@@ -6,13 +6,13 @@ import numpy as np
 
 from .audio_output import AudioChunk
 from .llm_utils import call_groq_chat, split_spoken_written
-from .turn_source import VoiceTurn
+from .turn import TurnContext
 
 
 async def run_voice_turn(
     pcm16: bytes,
     *,
-    turn: VoiceTurn,
+    context: TurnContext,
     transcribe_turn,
     stt_timeout_seconds: float,
     llm_model: str,
@@ -27,8 +27,8 @@ async def run_voice_turn(
     split_response=split_spoken_written,
 ) -> None:
     """Run the shared local voice turn, rejecting output from stale generations."""
-    cancelled = turn.cancelled
-    turn_id = turn.id
+    cancelled = context.cancelled
+    turn_id = context.id
     try:
         text = await (get_transcript() if get_transcript is not None else asyncio.wait_for(transcribe_turn(np.frombuffer(pcm16, dtype=np.int16)), timeout=stt_timeout_seconds))
     except TimeoutError:

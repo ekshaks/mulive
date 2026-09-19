@@ -12,8 +12,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from server.apps.loader import load_app_catalog
-from server.apps.run_apps import _collect_warm_up_targets, _warm_up_from_registry
+from mulive.apps.loader import load_app_catalog
+from mulive.apps.run_apps import _collect_warm_up_targets, _warm_up_from_registry
 
 
 def _write(path: Path, content: str) -> None:
@@ -133,7 +133,7 @@ class WarmUpScanTests(unittest.TestCase):
             self.assertEqual(stt, [])
 
     def test_warm_up_is_no_op_without_flag(self):
-        # server.warm_up defaults to false: nothing should be imported.
+        # mulive.warm_up defaults to false: nothing should be imported.
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             _make_bundle(root, "alpha", stt_provider="faster_whisper", tts_provider="piper")
@@ -159,7 +159,7 @@ class WarmUpScanTests(unittest.TestCase):
                 # Ensure a stale value from the shell doesn't hide the setdefault.
                 os.environ.pop("SILERO_BACKEND", None)
                 registry, catalog = load_app_catalog(catalog_path)
-                with patch("server.core.turndet.warm_up_vad") as mock_vad:
+                with patch("mulive.core.turndet.warm_up_vad") as mock_vad:
                     _warm_up_from_registry(registry, catalog)
                 self.assertEqual(os.environ.get("SILERO_BACKEND"), "onnx")
                 mock_vad.assert_called_once()

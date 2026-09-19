@@ -1,8 +1,4 @@
-"""Tests for TTS provider alias resolution and Piper asset auto-fetch.
-
-End-to-end where possible: we don't mock ``_make_tts_provider``'s internals,
-only the outer environment (URL for the auto-fetch downloader).
-"""
+"""Tests for TTS provider selection and Piper asset auto-fetch."""
 
 import os
 import unittest
@@ -10,44 +6,45 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from server.core.pipeline_helpers import (
-    _make_tts_provider,
-    _resolve_tts_provider_name,
-)
-from server.core.tts_providers import KokoroFastApiTTSProvider
+from mulive.core.embed_stt_tts import TTSFlow
+from mulive.core.tts_providers import KokoroOnnxTTSProvider, TTSConfig, create_tts_provider
 
 
 class TestTtsProviderAliasResolution(unittest.TestCase):
-    """The legacy ``provider: kokoro`` value must resolve to Kokoro-FastAPI."""
+    """Provider names are explicit; the default is in-process Kokoro."""
 
-    def test_kokoro_alias_resolves_to_kokoro_fastapi(self):
-        self.assertEqual(_resolve_tts_provider_name("kokoro"), "kokoro_fastapi")
+    def test_default_is_kokoro_onnx(self):
+        self.assertEqual(TTSConfig().provider, "kokoro_onnx")
 
-    def test_canonical_names_pass_through_unchanged(self):
-        for name in ("kokoro_fastapi", "kokoro_onnx", "piper"):
-            self.assertEqual(_resolve_tts_provider_name(name), name)
+    def test_explicit_names_pass_through_unchanged(self):
+        for name in ("kokoro_fastapi", "kokoro_onnx", "piper", "gemini"):
+            self.assertEqual(TTSConfig(provider=name).provider, name)
 
-    def test_unknown_names_pass_through_unchanged(self):
-        # Unknown provider values still reach ``_make_tts_provider`` which
-        # is where the ValueError is raised — keeps the error path close
-        # to the misuse rather than swallowed here.
-        self.assertEqual(_resolve_tts_provider_name("bogus"), "bogus")
+    def test_kokoro_alias_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown TTS provider: kokoro"):
+            TTSConfig(provider="kokoro")
 
-    def test_make_tts_provider_accepts_legacy_alias(self):
-        provider = _make_tts_provider("kokoro", "local", audio_output=None)
-        self.assertIsInstance(provider, KokoroFastApiTTSProvider)
+    def test_factory_creates_default_provider(self):
+        provider = create_tts_provider(TTSConfig(mode="local"))
+        self.assertIsInstance(provider, KokoroOnnxTTSProvider)
 
-    def test_make_tts_provider_rejects_unknown_provider(self):
-        with self.assertRaises(ValueError) as ctx:
-            _make_tts_provider("bogus", "local", audio_output=None)
-        self.assertIn("Unknown TTS provider", str(ctx.exception))
+    def test_embedded_flow_uses_default_provider(self):
+        audio_output = object()
+        with patch("mulive.core.embed_stt_tts.create_tts_provider") as factory:
+            TTSFlow().create_speaker(audio_output)
+        self.assertEqual(factory.call_args.args[0].provider, "kokoro_onnx")
+        self.assertIs(factory.call_args.kwargs["audio_output"], audio_output)
+
+    def test_unknown_provider_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown TTS provider: bogus"):
+            TTSConfig(provider="bogus")
 
 
 class TestPiperAssetAutoFetch(unittest.TestCase):
     """``_ensure_piper_asset`` should hit env override, cache, and download."""
 
     def test_env_override_returns_existing_file(self):
-        from server.core.tts_providers import piper
+        from mulive.core.tts_providers import piper
 
         with TemporaryDirectory() as tmp:
             model_path = Path(tmp) / "custom.onnx"
@@ -64,7 +61,7 @@ class TestPiperAssetAutoFetch(unittest.TestCase):
                 self.assertEqual(piper._ensure_piper_asset("config"), config_path)
 
     def test_env_override_raises_when_missing(self):
-        from server.core.tts_providers import piper
+        from mulive.core.tts_providers import piper
 
         with TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope.onnx"
@@ -73,7 +70,7 @@ class TestPiperAssetAutoFetch(unittest.TestCase):
                     piper._ensure_piper_asset("model")
 
     def test_config_derived_from_model_override_directory(self):
-        from server.core.tts_providers import piper
+        from mulive.core.tts_providers import piper
 
         with TemporaryDirectory() as tmp:
             model_path = Path(tmp) / "voice.onnx"
@@ -88,7 +85,7 @@ class TestPiperAssetAutoFetch(unittest.TestCase):
                 self.assertEqual(piper._ensure_piper_asset("config"), config_path)
 
     def test_cached_asset_is_used_when_present(self):
-        from server.core.tts_providers import piper
+        from mulive.core.tts_providers import piper
 
         with TemporaryDirectory() as tmp:
             fake_home = Path(tmp)
@@ -109,7 +106,7 @@ class TestPiperAssetAutoFetch(unittest.TestCase):
                     self.assertEqual(piper._ensure_piper_asset("model"), cached_model)
 
     def test_missing_asset_triggers_download(self):
-        from server.core.tts_providers import piper
+        from mulive.core.tts_providers import piper
 
         downloads = []
 

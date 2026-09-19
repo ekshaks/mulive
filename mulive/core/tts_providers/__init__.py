@@ -1,4 +1,4 @@
-from .factory import TTSConfig, create_tts_provider
+from .factory import TTSConfig, create_session_tts_provider, create_tts_provider
 from .sink import PlaybackState, TTSProvider, tts_sink
 
 _PROVIDER_EXPORTS = {

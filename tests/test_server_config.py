@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from server.core.server_config import ssl_config, web_config
+from mulive.core.server_config import ssl_config, web_config
 
 
 class ServerTLSConfigTests(unittest.TestCase):

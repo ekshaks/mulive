@@ -16,14 +16,40 @@ then grow it into a full product without replacing the runtime underneath.
 
 - **Build applications, not just chatbots.** Voice can operate a game, tutor,
   workflow, dashboard, or custom web UI.
-- **Keep product logic explicit.** Voice, video, UI actions, and model results
-  can be handled as typed events with deterministic state transitions.
+- **Keep product logic explicit.** Voice, video, UI actions, and model responses
+  can be handled with deterministic state transitions.
 - **Run close to the product.** Use direct WebRTC and local-capable STT/TTS;
   choose cloud models only where they add value.
-- **Make interactions testable.** Test a single turn or a complete interaction,
-  including interruption, cancellation, and application outcomes.
+- **Make interactions testable.** Test a single utterance or a complete
+  interaction, including interruption, cancellation, and application outcomes.
 
-## Start with a voice interaction
+## Choose your path
+
+- **Browser quickstart:** Run a complete WebRTC voice interaction in the bundled
+  browser client. Start with [Quickstart](#quickstart).
+- **Embedded FastAPI:** Add Mulive's browser client and voice transport to an
+  existing application. See [Embed in FastAPI](#embed-in-fastapi).
+- **Local microphone:** Run speech recognition and speech output without a
+  browser. See [Local microphone](#local-microphone).
+
+## Quickstart
+
+A Mulive voice interaction has five parts:
+
+```text
+microphone → utterance detection → speech recognition → response → speech output
+```
+
+The response can be a direct stream transformation, normal application code,
+or a model-backed `Agent`. Start with the direct path so each boundary is
+visible.
+
+This guide uses five terms consistently. An **utterance** is one piece of user
+speech. A **transcript** is its recognized text. A **response** is the text the
+application returns. A **client event** is structured data sent to the browser.
+**Speech output** is the generated audio the user hears.
+
+### Echo recognized speech
 
 ```bash
 pip install mulive
@@ -34,57 +60,124 @@ python -m mulive.quickstart.web --http --tts-browser
 
 Open `http://localhost:9000` and start streaming. `localhost` is trusted by
 modern browsers, so microphone access works without a certificate.
-The browser sends real-time media to Python and receives text and audio
-responses.
-
-An audio-only browser pipeline is just a few composed stages:
+The browser sends real-time media to Python. It receives transcripts and speech
+output. Without `GROQ_API_KEY`, the quickstart echoes each recognized utterance.
+The core flow is:
 
 ```python
 audio = Stream.source(session.audio_input, name="audio")
 turn = audio | turn_detector()
-transcripts = turn.segments | stt(provider="faster_whisper", model_size="tiny")
+transcripts = turn.value | stt(provider="faster_whisper", model_size="small")
 user_text = transcripts | final_transcript_text()
 
-add_text_sinks(user_text, session, role="user", subs=subs)
-add_tts(user_text, session.audio_output, turn.signals, subs=subs)
+user_text | to_user(session=session, role="user", subs=subs)
+user_text | to_user(
+    session=session, role="assistant", subs=subs,
+    tts=tts_config, tts_provider=tts_provider, interrupts=turn.started,
+)
 ```
 
-Run the complete version with:
+`turn_detector()` groups microphone audio into utterances. `stt()` converts each
+utterance into a transcript. The two `to_user()` connections show the transcript,
+then return the same text as the response through the display and speech output.
+
+### Let an LLM control responses
+
+Use `Agent` when responses need conversation history and a language model. The
+audio, utterance detection, speech recognition, and speech output stay the same.
+Only the response step changes:
+
+```python
+from mulive.apps.agent import Agent
+
+final_transcripts = transcripts | filter_items(lambda event: event.is_final)
+user_text = final_transcripts | map_items(lambda event: event.text) | non_empty_text()
+
+agent = Agent(llm_timeout_s=30)
+agent.connect(final_transcripts, turn.started)
+
+user_text | to_user(session=session, role="user", subs=subs)
+agent.assistant_text | to_user(
+    session=session, role="assistant", subs=subs,
+    tts=tts_config, tts_provider=tts_provider, interrupts=turn.started,
+)
+agent.client_events.to(client_message_sink(session), subs=subs)
+agent.start()
+```
+
+Install the Groq integration and set its key before running the same browser
+quickstart:
 
 ```bash
+pip install "mulive[groq]"
+export GROQ_API_KEY="your-key"
 python -m mulive.quickstart.web --http --tts-browser
 ```
 
-## Choose a server setup
+`Agent` owns conversation history and runs one model call at a time. A new
+utterance stops current speech output but does not cancel model work. If the
+user asks another question while a call is running, the agent acknowledges it
+and waits for the call or its 30-second timeout before answering the newer
+utterance.
 
-Use one of these public paths:
+The web quickstart uses Faster-Whisper `small` for recognition. Add
+`--tts-browser` or `--tts-local` to send speech output through the browser or
+the server's speakers. Override the recognition model with `--model-size`, use
+`--stt-provider mlx` on Apple Silicon, and change Groq's model with
+`--llm-model`. Change the model timeout with `--llm-timeout-s`.
 
-1. **Standalone browser app.** Run the WebRTC quickstart above for a complete
-   browser client, signaling server, and local voice pipeline.
-2. **Existing FastAPI app.** Mount voice into an app you already own:
+## Embed in FastAPI
 
-   ```bash
-   pip install "mulive[fastapi]"
-   ```
+Mount voice into an application you already own:
 
-   ```python
-   from fastapi import FastAPI
-   from mulive import mount_voice
+```bash
+pip install "mulive[fastapi]"
+```
 
-   app = FastAPI()
-   mount_voice(app)
-   ```
+```python
+from fastapi import FastAPI
+from mulive import mount_voice
 
-   Mulive serves its small browser client and its voice WebSocket transport.
-   There is no separate WebSocket server setup to choose.
+app = FastAPI()
+mount_voice(app)
+```
 
-## Default voice stack
+Mulive serves its browser client and voice WebSocket transport from the same
+application.
+
+## Voice model installation options
 
 Mulive includes portable local defaults: Faster-Whisper for speech recognition
 and Piper for speech output. They run on CPU and download their selected model
-weights on first use.
+weights on first use. `pip install mulive` is enough for the browser quickstart
+without Groq.
 
-Use provider extras only for alternatives such as MLX, cloud models, or Kokoro.
+| Option | Install | Use |
+| --- | --- | --- |
+| MLX Whisper (Apple Silicon) | `pip install "mulive[mlx]"` | `--stt-provider mlx` |
+| Groq responses | `pip install "mulive[groq]"` | Set `GROQ_API_KEY` for the web quickstart |
+| In-process Kokoro ONNX | `pip install "mulive[kokoro]"` | Select `kokoro_onnx` in an app's TTS configuration; not a web quickstart flag |
+| External Kokoro-FastAPI | `pip install "mulive[openai]"` | Run [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) separately at `localhost:8880` (or set `KOKORO_FASTAPI_URL`) |
+| Gemini models | `pip install "mulive[gemini]"` | Select Gemini in an app that supports it; the web quickstart uses Groq only |
+
+Extras can be combined, for example `pip install "mulive[mlx,groq]"`.
+`TTSConfig()` defaults to `kokoro_onnx`, so install `mulive[kokoro]` when
+using that default. The browser quickstart explicitly selects Piper.
+
+### Local microphone
+
+The local microphone example uses WebRTC acoustic echo cancellation (AEC) by
+default. With `--tts --allow-interruptions`, it uses the speech output as the
+echo reference. You can speak while the assistant is speaking. Start
+Kokoro-FastAPI first, then:
+
+```bash
+pip install "mulive[local-audio,openai]"
+python -m mulive.quickstart.mic --stt-provider faster_whisper --model-size small --tts --allow-interruptions
+```
+
+For MLX on Apple Silicon, add the `mlx` extra and use `--stt-provider mlx`.
+Use `--no-aec` only if you need to disable echo cancellation.
 
 ### HTTPS for another device or deployment
 
@@ -111,9 +204,9 @@ itself.
 
 | Example | What it demonstrates | Status |
 | --- | --- | --- |
-| [Microphone loop](quickstart/mic.py) | Local microphone, turn detection, STT, and optional TTS | Available |
-| [Browser audio](quickstart/web.py) | WebRTC audio, transcripts, and browser audio output | Available |
-| [Math helper](quickstart/multimodal_agent.py) | Browser audio/video, latest-frame vision, and spoken responses | Experimental |
+| [Microphone loop](mulive/quickstart/mic.py) | Local microphone, echo cancellation, utterance detection, speech recognition, and optional speech output | Available |
+| [Browser audio](mulive/quickstart/web.py) | WebRTC audio, transcript echo or Groq response, and browser speech output | Available |
+| [Math helper](mulive/quickstart/multimodal_agent.py) | Browser audio/video, latest-frame vision, and spoken responses | Experimental |
 | Audio todo app | Voice-driven UI state and actions | Planned |
 | Market voice dashboard | Voice control plus live visual data | Planned |
 | Card-cancellation flow | Guarded voice workflow with explicit confirmation | Planned |
@@ -126,7 +219,7 @@ must control:
 ```text
 mic / camera / browser UI
             ↓
-   streams and typed events
+  transcripts + client events
             ↓
   model calls + explicit app state
             ↓
@@ -143,7 +236,7 @@ where an answer must be checked before the app moves on.
 Today, Mulive's examples use a cascaded pipeline:
 
 ```text
-audio → turn detection → STT → LLM/VLM → TTS
+audio → utterance detection → speech recognition → model → speech output
 ```
 
 The same application model is intended to support direct streaming
@@ -155,9 +248,9 @@ need to change just because the voice model does.
 | Capability | Direction |
 | --- | --- |
 | Embeddable web voice | A small browser client and stable server integration for existing web apps |
-| Backend TTS | Stream generated speech from a Python service without the browser UI |
-| Systematic evaluation | Turn-level assertions and end-to-end interaction scenarios |
-| Latency explorer | Per-turn timing from speech end through playback |
+| Backend speech output | Stream generated speech from a Python service without the browser UI |
+| Systematic evaluation | Utterance-level assertions and end-to-end interaction scenarios |
+| Latency explorer | Per-utterance timing from speech end through playback |
 | Streaming voice models | Direct speech-to-speech and hybrid model adapters |
 
 ## Project structure

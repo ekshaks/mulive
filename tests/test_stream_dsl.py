@@ -2,7 +2,7 @@ import unittest
 
 from reactivex.subject import Subject
 
-from server.core.stream_dsl import Stream, map_filter_items
+from mulive.core.stream_dsl import Stream, map_filter_items
 
 
 class MapFilterItemsTests(unittest.TestCase):

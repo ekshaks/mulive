@@ -17,8 +17,9 @@ class PinnedWhisper:
       keep a core busy while the next segment starts a second one — on a small box
       that is how one slow utterance turns into a permanent backlog.
 
-    Loading starts immediately, on the worker, so the event loop never blocks on it
-    and :meth:`is_loading` can tell the browser to wait.
+    Loading starts when :meth:`wait_ready` or the first transcription is requested.
+    Server startup calls :meth:`wait_ready`, while merely constructing an embedded
+    runtime stays side-effect free.
 
     Args:
         mode: ``mlx`` or ``faster_whisper``.
@@ -31,8 +32,13 @@ class PinnedWhisper:
         self.model_size = model_size
         self.kwargs = kwargs
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{mode}-whisper")
-        self._stt_future = self.executor.submit(self._load)
-        self._stt_future.add_done_callback(self._log_load)
+        self._stt_future = None
+
+    def _start_loading(self):
+        if self._stt_future is None:
+            self._stt_future = self.executor.submit(self._load)
+            self._stt_future.add_done_callback(self._log_load)
+        return self._stt_future
 
     def _load(self):
         """Build the model. Runs on the worker thread."""
@@ -57,7 +63,7 @@ class PinnedWhisper:
 
     def is_loading(self) -> bool:
         """True while the model is still being loaded."""
-        return not self._stt_future.done()
+        return self._stt_future is not None and not self._stt_future.done()
 
     async def transcribe_turn(self, segment):
         """Transcribe one audio segment on the worker thread.
@@ -68,12 +74,13 @@ class PinnedWhisper:
         Returns:
             The recognised text.
         """
+        self._start_loading()
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, self._infer, segment)
 
     async def wait_ready(self) -> None:
         """Wait until the model has loaded, propagating load failures."""
-        await asyncio.wrap_future(self._stt_future)
+        await asyncio.wrap_future(self._start_loading())
 
     def shutdown(self) -> None:
         """Release the worker thread and drop any queued work."""

@@ -32,14 +32,14 @@ from reactivex.subject import Subject
 # used and the test never reaches for the network.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-from server.core.stream_dsl import (
+from mulive.core.stream_dsl import (
     Stream,
     SubGroup,
     check_stt_provider,
     stt,
     turn_detector,
 )
-from server.core.stt.whisper import WhisperSTT, require_backend
+from mulive.core.stt.whisper import WhisperSTT, require_backend
 
 SPOKEN_WORDS = "Knight to f 3"
 MODEL_SIZE = "small"
@@ -148,7 +148,7 @@ class SpokenAudioTests(unittest.IsolatedAsyncioTestCase):
         )
         texts: list[str] = []
         subs = SubGroup()
-        (turn.segments | stt(**options)).to(
+        (turn.value | stt(**options)).to(
             lambda observable: observable.subscribe(lambda event: texts.append(event.text)),
             subs=subs,
         )

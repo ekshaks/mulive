@@ -1,7 +1,7 @@
 """Tests for ``load_bundle_config_with_profile``.
 
 Standalone entrypoints (``python -m muapps.<app>.app``) rely on this
-helper to see the same profile-aware config as ``server.apps.run_apps``.
+helper to see the same profile-aware config as ``mulive.apps.run_apps``.
 The bug it prevents is subtle: without it, per-app ``config.yml`` values
 silently shadow ``apps.<profile>.yml`` overrides — which is exactly how
 AWS deployments were still falling back to Kokoro-FastAPI.
@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from server.apps.app_config import load_bundle_config_with_profile
+from mulive.apps.app_config import load_bundle_config_with_profile
 
 
 def _write(path: Path, content: str) -> None:
@@ -32,7 +32,7 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
             schema: 2
             defaults:
               stt: { provider: mlx, model_size: turbo, language: en }
-              tts: { enabled: true, mode: browser, provider: kokoro }
+              tts: { enabled: true, mode: browser, provider: kokoro_onnx }
             apps:
               - path: chess
                 enabled: true
@@ -70,7 +70,7 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
     def test_local_profile_merges_defaults_and_per_app(self):
         with patch.dict(os.environ, {"MULIVE_PROFILE": "local"}):
             merged = self._config(self.root / "chess" / "config.yml")
-        self.assertEqual(merged["tts"]["provider"], "kokoro")
+        self.assertEqual(merged["tts"]["provider"], "kokoro_onnx")
         self.assertEqual(merged["stt"]["provider"], "mlx")
         self.assertEqual(merged["stt"]["model_size"], "small")
 

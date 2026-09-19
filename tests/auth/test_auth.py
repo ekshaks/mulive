@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from server.core.auth import (
+from mulive.core.auth import (
     AppAuthentication,
     AuthenticatedPrincipal,
     SharedPasswordProvider,
@@ -13,7 +13,7 @@ from server.core.auth import (
     hash_password,
     verify_password,
 )
-from server.server_asyncio import Server
+from mulive.server.server_asyncio import Server
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +37,7 @@ class PasswordProviderTests(unittest.TestCase):
 
         self.assertEqual(sessions.read(token), AuthenticatedPrincipal("owner", "Owner"))
         self.assertIsNone(sessions.read(f"{token}x"))
-        with patch("server.core.auth.time.time", return_value=10_000_000_000):
+        with patch("mulive.core.auth.time.time", return_value=10_000_000_000):
             self.assertIsNone(sessions.read(token))
 
     def test_environment_configuration_requires_both_secrets(self):
@@ -65,7 +65,7 @@ class AuthenticationRouteTests(unittest.IsolatedAsyncioTestCase):
             login_html_path=ROOT / "client" / "login.html",
         )
         server = Server(run_session=unused_session, config={}, authentication=authentication)
-        self.client = TestClient(TestServer(server.app))
+        self.client = TestClient(TestServer(mulive.app))
         await self.client.start_server()
 
     async def asyncTearDown(self):

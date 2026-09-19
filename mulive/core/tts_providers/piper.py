@@ -19,8 +19,9 @@ Model / config file paths are configurable via env:
 
 * ``PIPER_MODEL_PATH``   — path to ``<voice>.onnx``. If unset the
   default ``en_US-lessac-medium`` voice is used and auto-fetched from
-  Hugging Face on first use into ``$XDG_CACHE_HOME/mulive/piper/``. If
-  set to an explicit path, that path must exist (no download attempted).
+  Hugging Face on first use into ``$MULIVE_CACHE_DIR/piper/`` (or
+  ``$XDG_CACHE_HOME/mulive/piper/``). If set to an explicit path, that
+  path must exist (no download attempted).
 * ``PIPER_CONFIG_PATH``  — path to ``<voice>.onnx.json`` (default:
   ``<PIPER_MODEL_PATH>.json``).
 
@@ -29,10 +30,12 @@ path or the cache directory to skip the network round-trip.
 """
 
 import asyncio
+import hashlib
 import os
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.request import urlopen
 
 import numpy as np
 
@@ -40,46 +43,64 @@ from ..audio_output import AudioChunk
 from ..logging_utils import monitor_log, monitor_time
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
 # Default voice — small (~60 MB), permissively licensed, ships with the
 # piper1-gpl catalog and is well-tested on 1-vCPU CPU boxes.
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"
 
-# Upstream layout on the rhasspy/piper-voices Hugging Face repo mirrors
-# <lang>/<locale>/<voice>/<quality>/<voice>-<quality>.onnx[.json].
+# Immutable Hugging Face revision for the default voice. Bump this revision
+# and both hashes together when upgrading the bundled default.
+_PIPER_VOICE_REVISION = "1162a9173d0ce503555aed757976b7a9912eae4c"
 _PIPER_VOICE_URL_BASE = (
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+    f"https://huggingface.co/rhasspy/piper-voices/resolve/{_PIPER_VOICE_REVISION}/"
     "en/en_US/lessac/medium"
 )
+_PIPER_ASSETS = {
+    "model": {
+        "filename": f"{DEFAULT_PIPER_VOICE}.onnx",
+        "sha256": "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f",
+    },
+    "config": {
+        "filename": f"{DEFAULT_PIPER_VOICE}.onnx.json",
+        "sha256": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0",
+    },
+}
 
 
 def _piper_cache_dir() -> Path:
     """Return (and create) the directory used to cache Piper voice assets."""
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    cache = Path(base) / "mulive" / "piper"
+    root = os.environ.get("MULIVE_CACHE_DIR")
+    if root is None:
+        root = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+        cache = Path(root) / "mulive" / "piper"
+    else:
+        cache = Path(root) / "piper"
     cache.mkdir(parents=True, exist_ok=True)
     return cache
 
 
-def _download_piper_asset(url: str, dest: Path) -> Path:
-    """Download ``url`` to ``dest`` atomically.
-
-    Writes to ``dest.with_suffix('.part')`` first so a partial download
-    from a Ctrl-C never presents as a valid cached asset. Unlike the
-    Silero fetcher we don't pin a SHA-256 here — Piper's HF catalog is
-    versioned by voice/quality name, not by revision, and shipping a
-    hash per voice would require pinning every voice we might ever add.
-    """
-    import urllib.request
-
+def _download_piper_asset(kind: str, dest: Path) -> Path:
+    """Download a pinned Piper asset atomically and verify its SHA-256."""
+    asset = _PIPER_ASSETS[kind]
+    url = f"{_PIPER_VOICE_URL_BASE}/{asset['filename']}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     print(f"Piper asset not found locally; downloading from {url} -> {dest}")
-    with urllib.request.urlopen(url, timeout=60) as response:
-        data = response.read()
-    tmp.write_bytes(data)
-    tmp.replace(dest)
+    digest = hashlib.sha256()
+    try:
+        with urlopen(url, timeout=60) as response, tmp.open("wb") as target:
+            while chunk := response.read(1024 * 1024):
+                digest.update(chunk)
+                target.write(chunk)
+        actual = digest.hexdigest()
+        if actual != asset["sha256"]:
+            raise RuntimeError(
+                f"Downloaded Piper {kind} asset has sha256 {actual}, expected "
+                f"{asset['sha256']}. Refusing to cache it."
+            )
+        tmp.replace(dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
 
 
@@ -94,11 +115,9 @@ def _ensure_piper_asset(kind: str) -> Path:
     1. Explicit env override (``PIPER_MODEL_PATH`` / ``PIPER_CONFIG_PATH``).
        If set, the file must already exist — we never auto-download to a
        user-specified path.
-    2. Pre-existing file at ``ext/piper/<voice>.onnx[.json]`` under the
-       repo root (deployment-friendly, matches the old manual layout).
-    3. Cached copy at ``$XDG_CACHE_HOME/mulive/piper/<voice>.onnx[.json]``.
-    4. Fresh download of the default voice from the pinned Hugging Face
-       URL into the cache dir.
+    2. Cached copy at ``$MULIVE_CACHE_DIR/piper/`` (or the XDG cache).
+    3. Fresh download of the default voice from the pinned Hugging Face
+       revision into the cache directory, with SHA-256 verification.
     """
     suffix = ".onnx" if kind == "model" else ".onnx.json"
     env_var = "PIPER_MODEL_PATH" if kind == "model" else "PIPER_CONFIG_PATH"
@@ -120,14 +139,18 @@ def _ensure_piper_asset(kind: str) -> Path:
                 )
             return path
 
-    filename = f"{DEFAULT_PIPER_VOICE}{suffix}"
-    bundled = PROJECT_ROOT / "ext" / "piper" / filename
-    if bundled.exists():
-        return bundled
+    asset = _PIPER_ASSETS[kind]
+    filename = asset["filename"]
     cached = _piper_cache_dir() / filename
     if cached.exists():
+        actual = hashlib.sha256(cached.read_bytes()).hexdigest()
+        if actual != asset["sha256"]:
+            raise RuntimeError(
+                f"Cached Piper {kind} asset has sha256 {actual}, expected {asset['sha256']}. "
+                f"Remove {cached} and retry, or set an explicit trusted path."
+            )
         return cached
-    return _download_piper_asset(f"{_PIPER_VOICE_URL_BASE}/{filename}", cached)
+    return _download_piper_asset(kind, cached)
 
 
 def _model_path() -> Path:

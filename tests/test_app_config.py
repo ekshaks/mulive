@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from server.apps.app_config import UI_API_VERSION, build_web_config
-from server.server_asyncio import Server as AsyncServer
-from server.server_fastapi_webrtc import Server as FastAPIServer
+from mulive.apps.app_config import UI_API_VERSION, build_web_config
+from mulive.server.server_asyncio import Server as AsyncServer
+from mulive.server.server_fastapi_webrtc import Server as FastAPIServer
 
 
 async def _unused_session(session):

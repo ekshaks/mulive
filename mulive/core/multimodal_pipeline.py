@@ -2,7 +2,7 @@ import asyncio
 import uuid
 
 from .events import ClientTranscriptMessage
-from .turn_source import SpeechStarted, VoiceTurn
+from .turn import SpeechStarted, TurnContext, VoiceTurn
 from .voice_engine import run_voice_turn
 
 
@@ -18,46 +18,45 @@ class WebRTCVoiceTurnRunner:
         self.answer = answer
         self.speak = speak
         self._generation = 0
-        self._input_turn: VoiceTurn | None = None
-        self._active_turn: VoiceTurn | None = None
+        self._latest_started_id: str | None = None
+        self._active_context: TurnContext | None = None
         self._task: asyncio.Task | None = None
-
-    def on_vad_event(self, event) -> None:
-        if event.speech_started is not None:
-            self._cancel_active()
-            if self._input_turn is not None:
-                self._input_turn.cancelled.set()
-            self._input_turn = event.speech_started.turn
 
     def on_speech_started(self, event: SpeechStarted) -> None:
         """Cancel an active response when a new user turn begins."""
+        self._latest_started_id = event.turn_id
         self._cancel_active()
 
     def start(self, text: str, turn: VoiceTurn | None = None) -> None:
-        if turn is not None and turn.cancelled.is_set():
+        """Start response work for a current completed voice turn."""
+        if (
+            turn is not None
+            and self._latest_started_id is not None
+            and turn.id != self._latest_started_id
+        ):
             return
         self._cancel_active()
         self._generation += 1
-        generation = self._generation
-        turn = turn.with_generation(generation) if turn is not None else VoiceTurn(uuid.uuid4().hex, generation=generation)
-        self._input_turn = None
-        self._active_turn = turn
+        context = TurnContext(
+            id=turn.id if turn is not None else uuid.uuid4().hex,
+            generation=self._generation,
+        )
+        self._active_context = context
         self._task = asyncio.create_task(
-            self._run(text, turn), name=f"webrtc-voice:{turn.turn_id}"
+            self._run(text, context), name=f"webrtc-voice:{context.id}"
         )
 
     def cancel(self) -> asyncio.Task | None:
+        """Cancel active response work and return its task, if any."""
         task = self._cancel_active()
-        if self._input_turn is not None:
-            self._input_turn.cancelled.set()
-            self._input_turn = None
+        self._latest_started_id = None
         return task
 
     def _cancel_active(self) -> asyncio.Task | None:
         self._generation += 1
-        if self._active_turn is not None:
-            self._active_turn.cancelled.set()
-            self._active_turn = None
+        if self._active_context is not None:
+            self._active_context.cancelled.set()
+            self._active_context = None
         task = self._task
         if self._task is not None:
             self._task.cancel()
@@ -68,13 +67,14 @@ class WebRTCVoiceTurnRunner:
         return task
 
     async def aclose(self) -> None:
+        """Cancel active work and wait for its task to finish."""
         task = self.cancel()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
 
-    async def _run(self, text: str, turn: VoiceTurn) -> None:
+    async def _run(self, text: str, context: TurnContext) -> None:
         def is_current() -> bool:
-            return self._active_turn is turn and not turn.cancelled.is_set()
+            return self._active_context is context and not context.cancelled.is_set()
 
         async def emit(event: dict) -> None:
             if not is_current():
@@ -89,7 +89,7 @@ class WebRTCVoiceTurnRunner:
         try:
             await run_voice_turn(
                 b"",
-                turn=turn,
+                context=context,
                 transcribe_turn=None,
                 stt_timeout_seconds=0,
                 llm_model="",
@@ -108,13 +108,13 @@ class WebRTCVoiceTurnRunner:
                 self.session.send_to_client(
                     {
                         "type": "error",
-                        "turn_id": turn.turn_id,
+                        "turn_id": context.id,
                         "text": f"pipeline failed: {type(exc).__name__}",
                     }
                 )
         finally:
-            if self._active_turn is turn:
-                self._active_turn = None
+            if self._active_context is context:
+                self._active_context = None
                 self._task = None
 
 

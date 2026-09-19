@@ -16,7 +16,7 @@ from .turndet import warm_up_vad
 
 if TYPE_CHECKING:
     from .audio_output import AudioOutput
-    from .turn_source import VoiceTurn
+    from .turn import TurnContext
     from .ws_voice_protocols import VoiceSession
 
 
@@ -78,14 +78,13 @@ class TTSFlow:
     def create_speaker(self, audio_output: "AudioOutput"):
         if not self.enabled:
             raise RuntimeError("TTS is disabled by configuration")
-        provider = str(self.config.get("provider") or "kokoro_fastapi")
-        provider = {"kokoro": "kokoro_fastapi"}.get(provider, provider)
+        provider = str(self.config.get("provider") or "kokoro_onnx")
         if provider == "gemini":
             raise ValueError("Gemini TTS does not yet support embedded PCM output")
         return create_tts_provider(
             TTSConfig(
                 provider=provider,
-                output="webrtc",
+                mode="browser",
                 voice=self.config.get("voice"),
                 model=self.config.get("model"),
             ),
@@ -145,11 +144,11 @@ class EmbedVoiceHandler:
     async def wait_ready(self) -> None:
         await self.stt_flow.wait_ready()
 
-    async def run(self, pcm16, turn: "VoiceTurn", is_current, emit, _audio_output) -> None:
+    async def run(self, pcm16, context: "TurnContext", is_current, emit, _audio_output) -> None:
         text = await self.stt_flow.transcribe_turn(pcm16)
         if not is_current():
             return
-        await emit({"type": "transcript.final", "turn_id": turn.turn_id, "text": text})
+        await emit({"type": "transcript.final", "turn_id": context.id, "text": text})
         if self.on_transcript is not None:
             if self.session is None:
                 raise RuntimeError("embed voice handler is not bound to a session")
@@ -157,7 +156,7 @@ class EmbedVoiceHandler:
             if inspect.isawaitable(result):
                 await result
         if is_current():
-            await emit({"type": "turn.finished", "turn_id": turn.turn_id, "outcome": "transcribed"})
+            await emit({"type": "turn.finished", "turn_id": context.id, "outcome": "transcribed"})
 
     async def speak(self, text: str, cancelled: asyncio.Event, _audio_output) -> None:
         if self._speaker is None:

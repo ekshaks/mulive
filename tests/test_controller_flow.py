@@ -2,8 +2,8 @@ import unittest
 
 from reactivex.subject import Subject
 
-from server.core.controller_flow import ControllerFlow
-from server.core.stream_dsl import Stream, SubGroup
+from mulive.core.controller_flow import ControllerFlow
+from mulive.core.stream_dsl import Stream, SubGroup
 
 
 class FakeController:

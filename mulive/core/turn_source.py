@@ -3,66 +3,33 @@
 from __future__ import annotations
 
 import asyncio
-import time
-import uuid
-from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-@dataclass(frozen=True)
-class VoiceTurn:
-    """One voice turn from its first speech frame through cancellation."""
-
-    id: str
-    pcm16: bytes = b""
-    generation: int = 0
-    cancelled: asyncio.Event = field(default_factory=asyncio.Event, compare=False)
-
-    @property
-    def turn_id(self) -> str:
-        """Compatibility alias for protocol payloads that use ``turn_id``."""
-        return self.id
-
-    @property
-    def samples(self) -> np.ndarray:
-        """PCM16 samples for STT stages that operate on arrays."""
-        return np.frombuffer(self.pcm16, dtype=np.int16)
-
-    def with_pcm16(self, pcm16: bytes) -> "VoiceTurn":
-        _validate_pcm16(pcm16)
-        return replace(self, pcm16=pcm16)
-
-    def with_generation(self, generation: int) -> "VoiceTurn":
-        return replace(self, generation=generation)
-
-
-@dataclass(frozen=True)
-class SpeechStarted:
-    """Barge-in trigger emitted as soon as a new user turn starts."""
-
-    turn: VoiceTurn
-
-    @property
-    def turn_id(self) -> str:
-        return self.turn.id
+from .turn import SpeechStarted, TurnEvent, VoiceTurn, validate_pcm16
+from .turndet import TurnDetector
 
 
 class VoiceInput:
     """Async input boundary yielding speech starts and completed voice turns."""
 
     def __init__(self) -> None:
-        self._events: asyncio.Queue[SpeechStarted | VoiceTurn] = asyncio.Queue()
+        self._events: asyncio.Queue[TurnEvent] = asyncio.Queue()
 
-    async def started(self, turn: VoiceTurn) -> None:
-        await self._events.put(SpeechStarted(turn))
+    async def started(self, turn_id: str) -> None:
+        """Publish the start of a turn."""
+        await self._events.put(SpeechStarted(turn_id))
 
     async def completed(self, turn: VoiceTurn) -> None:
+        """Publish a completed turn."""
         await self._events.put(turn)
 
     def __aiter__(self):
+        """Return this input as its asynchronous event iterator."""
         return self
 
-    async def __anext__(self) -> SpeechStarted | VoiceTurn:
+    async def __anext__(self) -> TurnEvent:
+        """Wait for and return the next input event."""
         return await self._events.get()
 
 
@@ -72,26 +39,29 @@ class PTTTurnSource:
     def __init__(self, voice_input: VoiceInput, *, max_samples: int = 16_000 * 60) -> None:
         self.voice_input = voice_input
         self.max_samples = max_samples
-        self.turn: VoiceTurn | None = None
+        self._turn_id: str | None = None
         self._chunks: list[bytes] = []
         self._samples = 0
 
     @property
     def turn_id(self) -> str | None:
-        return self.turn.id if self.turn is not None else None
+        """Return the active push-to-talk turn identifier."""
+        return self._turn_id
 
     async def start(self, turn_id: str) -> None:
-        if self.turn is not None:
+        """Start a push-to-talk capture with the supplied identifier."""
+        if self._turn_id is not None:
             raise ValueError("capture turn already active")
-        self.turn = VoiceTurn(turn_id)
+        self._turn_id = turn_id
         self._chunks = []
         self._samples = 0
-        await self.voice_input.started(self.turn)
+        await self.voice_input.started(turn_id)
 
     def write(self, payload: bytes) -> None:
-        if self.turn is None:
+        """Append validated PCM16 bytes to the active capture."""
+        if self._turn_id is None:
             raise ValueError("audio outside capture turn")
-        _validate_pcm16(payload)
+        validate_pcm16(payload)
         samples = len(payload) // 2
         if self._samples + samples > self.max_samples:
             raise ValueError("turn exceeds 60 seconds")
@@ -99,96 +69,84 @@ class PTTTurnSource:
         self._samples += samples
 
     async def commit(self, turn_id: str) -> None:
-        if self.turn is None or turn_id != self.turn.id:
+        """Publish and close the matching active capture."""
+        if self._turn_id is None or turn_id != self._turn_id:
             raise ValueError("commit outside capture turn")
-        turn = self.turn
+        committed_id = self._turn_id
         pcm16 = b"".join(self._chunks)
         self._reset()
         if not pcm16:
             raise ValueError("empty pcm16")
-        await self.voice_input.completed(turn.with_pcm16(pcm16))
+        await self.voice_input.completed(VoiceTurn(committed_id, pcm16))
 
     def cancel(self, turn_id: str | None = None) -> None:
-        if turn_id is not None and (self.turn is None or turn_id != self.turn.id):
+        """Discard the active capture when its identifier matches."""
+        if turn_id is not None and (self._turn_id is None or turn_id != self._turn_id):
             return
-        if self.turn is not None:
-            self.turn.cancelled.set()
         self._reset()
 
     def _reset(self) -> None:
-        self.turn = None
+        self._turn_id = None
         self._chunks = []
         self._samples = 0
 
 
-class VADTurnSource:
-    """Continuous PCM16 source that emits a turn after VAD silence."""
+class WebSocketVADSource:
+    """Adapt WebSocket PCM16 bytes to the canonical turn detector."""
 
-    def __init__(self, voice_input: VoiceInput, is_speech, *, silence_timeout: float = 1.0, max_samples: int = 16_000 * 60) -> None:
+    def __init__(
+        self,
+        voice_input: VoiceInput,
+        is_speech,
+        *,
+        silence_timeout: float = 1.0,
+        max_samples: int = 16_000 * 60,
+    ) -> None:
         self.voice_input = voice_input
-        self.is_speech = is_speech
-        self.silence_timeout = silence_timeout
-        self.max_samples = max_samples
-        self.turn: VoiceTurn | None = None
-        self._chunks: list[bytes] = []
-        self._samples = 0
-        self._last_speech = 0.0
+        self.detector = TurnDetector(
+            is_speech,
+            silence_timeout=silence_timeout,
+            max_samples=max_samples,
+        )
         self._timer: asyncio.Task | None = None
-        self._analysis = b""
-        self._analysis_samples = 1_600
 
     @property
     def turn_id(self) -> str | None:
-        return self.turn.id if self.turn is not None else None
+        """Return the active detected turn identifier."""
+        return self.detector.turn_id
 
     async def write(self, payload: bytes) -> None:
-        _validate_pcm16(payload)
-        self._analysis += payload
-        window_bytes = self._analysis_samples * 2
-        while len(self._analysis) >= window_bytes:
-            window, self._analysis = self._analysis[:window_bytes], self._analysis[window_bytes:]
-            samples = np.frombuffer(window, dtype="<i2")
-            if self.is_speech(samples):
-                if self.turn is None:
-                    self.turn = VoiceTurn(uuid.uuid4().hex)
-                    await self.voice_input.started(self.turn)
-                    self._timer = asyncio.create_task(self._flush_after_silence(), name="voice-vad-flush")
-                if self._samples + samples.size > self.max_samples:
-                    await self._flush()
-                    return
-                self._chunks.append(window)
-                self._samples += samples.size
-                self._last_speech = time.monotonic()
+        """Feed validated WebSocket PCM16 bytes into turn detection."""
+        validate_pcm16(payload)
+        await self._publish(self.detector.feed(np.frombuffer(payload, dtype="<i2")))
 
     async def _flush_after_silence(self) -> None:
         try:
-            while self.turn is not None:
-                await asyncio.sleep(self.silence_timeout)
-                if self.turn is not None and time.monotonic() - self._last_speech >= self.silence_timeout:
-                    await self._flush()
+            while self.detector.turn_id is not None:
+                await asyncio.sleep(self.detector.silence_timeout)
+                await self._flush()
         except asyncio.CancelledError:
-            pass
+            return
 
     async def _flush(self) -> None:
-        turn, pcm16 = self.turn, b"".join(self._chunks)
-        self.turn = None
-        self._chunks = []
-        self._samples = 0
-        self._analysis = b""
-        if turn is not None and pcm16:
-            await self.voice_input.completed(turn.with_pcm16(pcm16))
+        await self._publish(self.detector.flush_if_ready())
+        if self.detector.turn_id is None:
+            self._timer = None
+
+    async def _publish(self, events: list[TurnEvent]) -> None:
+        for event in events:
+            if isinstance(event, SpeechStarted):
+                await self.voice_input.started(event.turn_id)
+                if self._timer is None:
+                    self._timer = asyncio.create_task(
+                        self._flush_after_silence(), name="voice-vad-flush"
+                    )
+            else:
+                await self.voice_input.completed(event)
 
     def cancel(self, _turn_id: str | None = None) -> None:
+        """Cancel the flush timer and discard the active detected turn."""
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
-        if self.turn is not None:
-            self.turn.cancelled.set()
-        self.turn = None
-        self._chunks = []
-        self._samples = 0
-
-
-def _validate_pcm16(payload: bytes) -> None:
-    if not payload or len(payload) % 2:
-        raise ValueError("invalid pcm16")
+        self.detector.cancel()

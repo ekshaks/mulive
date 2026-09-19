@@ -87,7 +87,7 @@ class WebSocketTurnHandler:
         if completed is None:
             return
         text, reply = completed
-        await emit({"type": "transcript.final", "turn_id": turn.turn_id, "text": text})
+        await emit({"type": "transcript.final", "turn_id": turn.id, "text": text})
         if not is_current() or self._session is None:
             return
         try:
@@ -99,7 +99,7 @@ class WebSocketTurnHandler:
             raise
         await self.conversation.report_delivery(reply, result.text_delivered)
         if is_current():
-            await emit({"type": "turn.finished", "turn_id": turn.turn_id, "outcome": "responded"})
+            await emit({"type": "turn.finished", "turn_id": turn.id, "outcome": "responded"})
 
     async def speak(self, text: str, cancelled, _audio_output) -> None:
         if self._speaker is None:

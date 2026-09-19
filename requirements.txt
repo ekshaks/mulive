@@ -19,4 +19,3 @@ piper-tts
 sounddevice
 pywebrtc-audio
 text2num
-chess>=1.11,<2

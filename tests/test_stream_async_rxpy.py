@@ -4,8 +4,8 @@ import unittest
 import numpy as np
 from reactivex.subject import Subject
 
-from server.core.events import TranscriptEvent
-from server.core.stream_dsl import (
+from mulive.core.events import TranscriptEvent
+from mulive.core.stream_dsl import (
     Stream,
     SubGroup,
     async_map_stage,
@@ -101,9 +101,9 @@ class AsyncMapStageTests(unittest.IsolatedAsyncioTestCase):
         subs = SubGroup()
         received = []
 
-        async def transcribe_turn(segment):
+        async def transcribe_turn(turn):
             return TranscriptEvent(
-                text=str(int(segment.sum())),
+                text=str(int(turn.samples.sum())),
                 is_final=True,
             )
 
@@ -112,14 +112,16 @@ class AsyncMapStageTests(unittest.IsolatedAsyncioTestCase):
             silence_timeout=0.01,
             poll_interval=0.005,
         )
-        transcripts = turn.segments | async_map_stage(transcribe_turn)
+        transcripts = turn.value | async_map_stage(transcribe_turn)
         final_text = transcripts | final_transcript_text()
         final_text.to(
             lambda observable: observable.subscribe(received.append),
             subs=subs,
         )
 
-        audio.on_next(np.array([10, 20, 12], dtype=np.int16))
+        samples = np.zeros(1_600, dtype=np.int16)
+        samples[:3] = [10, 20, 12]
+        audio.on_next(samples)
         await asyncio.sleep(0.06)
 
         self.assertEqual(received, ["42"])

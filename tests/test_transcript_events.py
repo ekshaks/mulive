@@ -2,8 +2,8 @@ import unittest
 
 from reactivex.subject import Subject
 
-from server.core.events import TranscriptEvent
-from server.core.stream_dsl import Stream, SubGroup, final_transcript_text
+from mulive.core.events import TranscriptEvent
+from mulive.core.stream_dsl import Stream, SubGroup, final_transcript_text
 
 
 class TranscriptEventTests(unittest.TestCase):

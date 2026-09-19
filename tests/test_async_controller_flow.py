@@ -3,8 +3,8 @@ import unittest
 
 from reactivex.subject import Subject
 
-from server.core.async_controller_flow import AsyncControllerFlow
-from server.core.stream_dsl import Stream, SubGroup
+from mulive.core.async_controller_flow import AsyncControllerFlow
+from mulive.core.stream_dsl import Stream, SubGroup
 
 
 class EchoWorkflow:

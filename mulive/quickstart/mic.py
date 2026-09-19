@@ -202,13 +202,13 @@ async def run_mic_pipeline(args):
 
     audio = Stream.source(audio_input, name="mic_audio")
     turn = audio | turn_detector()
-    segments = turn.segments
+    audio = turn.value
     if playback_state is not None and args.allow_interruptions and not args.aec:
-        segments = segments | drop_while(
+        audio = audio | drop_while(
             lambda: playback_state.is_playing_or_recent(args.echo_suppress_seconds),
             name="drop_tts_feedback",
         )
-    transcripts = segments | stt(
+    transcripts = audio | stt(
         provider=args.stt_provider,
         model=args.stt_model,
         model_size=args.model_size,
@@ -221,7 +221,7 @@ async def run_mic_pipeline(args):
         user_text.to(
             tts_sink(
                 KokoroFastApiTTSProvider(pcm_sink=pcm_sink),
-                interrupts=turn.signals,
+                interrupts=turn.started,
                 name="kokoro_tts",
                 state=playback_state,
             ),

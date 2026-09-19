@@ -5,16 +5,16 @@ from dataclasses import dataclass
 
 from reactivex.subject import Subject
 
-from server.apps.app_output import AppOutput, output
-from server.apps.effects import EffectRunner
-from server.apps.events import FeedbackEvent
-from server.apps.prompts import (
+from mulive.apps.app_output import AppOutput, output
+from mulive.apps.effects import EffectRunner
+from mulive.apps.events import FeedbackEvent
+from mulive.apps.prompts import (
     extract_json_object,
     load_prompt_instructions,
     load_prompt_request,
 )
-from server.apps.qa import Ask, Refusal, Verdict, severity_for
-from server.core.stream_dsl import Stream, SubGroup
+from mulive.apps.qa import Ask, Refusal, Verdict, severity_for
+from mulive.core.stream_dsl import Stream, SubGroup
 
 
 @dataclass(frozen=True)

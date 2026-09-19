@@ -1,6 +1,7 @@
 import asyncio
 import time
 import wave
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -34,6 +35,7 @@ class SubGroup:
 
     def __init__(self):
         self._subs = []
+        self._async_closers = []
 
     def add(self, sub: Sub) -> Sub:
         if sub not in self._subs:
@@ -44,6 +46,16 @@ class SubGroup:
         for sub in list(self._subs):
             sub.dispose()
         self._subs.clear()
+
+    def add_async_close(self, closer):
+        self._async_closers.append(closer)
+
+    async def aclose(self):
+        self.dispose()
+        closers = list(reversed(self._async_closers))
+        self._async_closers.clear()
+        for close in closers:
+            await close()
 
 
 class Stream:
@@ -87,10 +99,19 @@ class Stream:
 class MultiOutput:
     """Named outputs for stages like VAD that produce data plus side signals."""
 
-    def __init__(self, **streams: Stream):
+    def __init__(self, *, deprecated_aliases=None, **streams: Stream):
         self._streams = streams
+        self._deprecated_aliases = deprecated_aliases or {}
 
     def __getattr__(self, name: str):
+        target = self._deprecated_aliases.get(name)
+        if target is not None:
+            warnings.warn(
+                f"turn.{name} is deprecated; use turn.{target} instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self._streams[target]
         try:
             return self._streams[name]
         except KeyError as exc:
@@ -118,33 +139,33 @@ class LatestValue:
 
 def turn_detector(name: str = "turn_detector", **kwargs):
     def apply(stream: Stream):
+        from .turn import SpeechStarted, VoiceTurn
         from .turndet import turn_detector_vad
 
         events = turn_detector_vad(stream.observable, **kwargs).pipe(ops.share())
 
         return MultiOutput(
-            segments=Stream(
+            audio=Stream(
                 events.pipe(
-                    ops.filter(lambda event: event.segment is not None),
-                    ops.map(lambda event: event.segment),
+                    ops.filter(lambda event: isinstance(event, VoiceTurn)),
+                    ops.map(lambda event: event.samples),
                 ),
-                name=f"{name}.segments",
+                name=f"{name}.audio",
             ),
-            signals=Stream(
+            started=Stream(
                 events.pipe(
-                    ops.filter(lambda event: event.speech_started is not None),
-                    ops.map(lambda event: event.speech_started),
+                    ops.filter(lambda event: isinstance(event, SpeechStarted)),
                 ),
-                name=f"{name}.signals",
+                name=f"{name}.started",
             ),
             events=Stream(events, name=f"{name}.events"),
-            turns=Stream(
+            value=Stream(
                 events.pipe(
-                    ops.filter(lambda event: event.turn is not None),
-                    ops.map(lambda event: event.turn),
+                    ops.filter(lambda event: isinstance(event, VoiceTurn)),
                 ),
-                name=f"{name}.turns",
+                name=f"{name}.value",
             ),
+            deprecated_aliases={"segments": "audio", "turns": "value", "signals": "started"},
         )
 
     return apply
