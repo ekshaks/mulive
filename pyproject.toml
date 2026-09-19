@@ -35,7 +35,8 @@ dependencies = [
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.115", "uvicorn>=0.30"]
 mlx = ["mlx-whisper; platform_system == 'Darwin' and platform_machine == 'arm64'"]
-groq = ["groq"]
+# Installs Pydantic AI Slim and the Groq provider used by LLM control.
+groq = ["pydantic-ai-slim[groq]>=2.46,<3"]
 openai = ["openai"]
 gemini = ["google-genai"]
 kokoro = ["kokoro-onnx"]

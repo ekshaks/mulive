@@ -2,6 +2,9 @@ import argparse
 import os
 
 from mulive.core.server_config import web_config
+from mulive._resources import packaged_path
+from mulive.apps.prompts import load_system_prompt
+from mulive.core.stt import STTConfig
 from mulive.core.pipeline_helpers import non_empty_text, to_user
 from mulive.core.tts_providers import TTSConfig, create_session_tts_provider
 from mulive.core.stream_dsl import (
@@ -9,26 +12,45 @@ from mulive.core.stream_dsl import (
     SubGroup,
     client_message_sink,
     filter_items,
-    map_items,
     turn_detector,
     stt,
 )
-from mulive.apps.agent import Agent, DEFAULT_GROQ_MODEL, DEFAULT_LLM_TIMEOUT_S
+from mulive.apps.conversation_harness import (
+    ConversationHarness,
+    DEFAULT_GROQ_MODEL,
+    DEFAULT_LLM_TIMEOUT_S,
+)
+async def today_date() -> str:
+    """Return the current date."""
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d")
+
+async def lookup_order(order_id: str) -> dict:
+    """Return the status for one order without changing order data."""
+    return {
+        "order_id": order_id,
+        "status": "unavailable",
+        "reason": "Order data source is not configured.",
+    }
+
+
+TOOLS = (lookup_order, today_date)
+VOICE_SYSTEM_PROMPT = load_system_prompt(
+    packaged_path("quickstart", "prompts.yml"), "web_voice"
+)
 
 
 async def run_session(
     session,
     tts_config: TTSConfig | None = None,
-    stt_provider="faster_whisper",
-    stt_model=None,
-    model_size="small",
+    stt_config: STTConfig = STTConfig(variant="small"),
     llm_model=DEFAULT_GROQ_MODEL,
     llm_timeout_s=DEFAULT_LLM_TIMEOUT_S,
 ):
     await session.wait_until_ready()
     subs = SubGroup()
     tts_provider = create_session_tts_provider(session, subs, tts_config)
-    agent = None
+    conversation = None
 
     try:
         if not os.environ.get("GROQ_API_KEY"):
@@ -36,35 +58,32 @@ async def run_session(
 
         audio = Stream.source(session.audio_input, name="audio")
         turn = audio | turn_detector()
-        transcripts = turn.value | stt(
-            provider=stt_provider,
-            model=stt_model,
-            model_size=model_size,
-        )
+        transcripts = turn.value | stt(stt_config)
         final_transcripts = transcripts | filter_items(lambda event: event.is_final)
-        user_text = (
-            final_transcripts
-            | map_items(lambda event: event.text, name="web_user_text")
-            | non_empty_text()
+        user_text = final_transcripts | non_empty_text(name="web_user_text")
+        conversation = ConversationHarness(
+            system_prompt=VOICE_SYSTEM_PROMPT,
+            llm_model=llm_model,
+            llm_timeout_s=llm_timeout_s,
+            tools=TOOLS,
         )
-        agent = Agent(llm_model=llm_model, llm_timeout_s=llm_timeout_s)
-        agent.connect(final_transcripts, turn.started)
+        conversation.connect(final_transcripts, turn.started)
 
         user_text | to_user(session=session, role="user", subs=subs)
-        agent.assistant_text | to_user(
+        conversation.assistant_text | to_user(
             session=session, role="assistant", subs=subs,
             tts=tts_config, tts_provider=tts_provider, interrupts=turn.started,
         )
-        agent.client_events.to(
+        conversation.client_events.to(
             client_message_sink(session),
-            name="web_agent_client_events",
+            name="web_conversation_harness_client_events",
             subs=subs,
         )
-        agent.start()
+        conversation.start()
         await session.closed.wait()
     finally:
-        if agent is not None:
-            await agent.aclose()
+        if conversation is not None:
+            await conversation.aclose()
         await subs.aclose()
 
 
@@ -73,10 +92,11 @@ def parse_args():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--tts-local", dest="tts_mode", action="store_const", const="local", help="Play Piper TTS on the server speaker.")
     group.add_argument("--tts-browser", dest="tts_mode", action="store_const", const="browser", help="Stream Piper TTS to the browser audio track.")
+    parser.set_defaults(tts_mode="browser")
     tls_group = parser.add_mutually_exclusive_group()
     tls_group.add_argument("--https", action="store_true", default=True, help="Serve HTTPS with local certs. Default.")
     tls_group.add_argument("--http", action="store_true", help="Serve plain HTTP.")
-    parser.add_argument("--model-size", default="small")
+    parser.add_argument("--model-variant", default="small")
     parser.add_argument("--stt-provider", default="faster_whisper")
     parser.add_argument("--stt-model")
     parser.add_argument("--llm-model", default=DEFAULT_GROQ_MODEL, help="Groq model used when GROQ_API_KEY is set.")
@@ -90,15 +110,21 @@ if __name__ == "__main__":
     args = parse_args()
 
     config = web_config(use_https=not args.http, debug=False)
-    tts_config = TTSConfig(provider="piper", mode=args.tts_mode) if args.tts_mode else None
+    tts_config = TTSConfig(provider="piper", mode=args.tts_mode)
+    stt_config = STTConfig(
+        provider=args.stt_provider,
+        model=args.stt_model,
+        variant=args.model_variant,
+    )
+    if stt_config.provider == "faster_whisper":
+        from mulive.core.stt.whisper import warm_up
+        warm_up(stt_config)
 
     server = Server(
         run_session=lambda session: run_session(
             session,
             tts_config=tts_config,
-            stt_provider=args.stt_provider,
-            stt_model=args.stt_model,
-            model_size=args.model_size,
+            stt_config=stt_config,
             llm_model=args.llm_model,
             llm_timeout_s=args.llm_timeout_s,
         ),

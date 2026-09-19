@@ -1,7 +1,7 @@
 # Copy to config.yml and choose providers exactly as in a Mulive app bundle.
 stt:
   provider: faster_whisper  # faster_whisper | mlx | deepgram
-  model_size: tiny
+  variant: tiny
   language: en
   timeout_seconds: 30
 

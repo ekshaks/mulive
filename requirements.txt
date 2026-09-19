@@ -6,7 +6,7 @@ pydub
 asyncio
 reactivex
 openai
-groq
+pydantic-ai-slim[groq]>=2.46,<3
 torch
 faster-whisper
 google-genai

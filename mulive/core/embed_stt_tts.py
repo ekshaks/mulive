@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, TYPE_CHECKING
 import numpy as np
 
 from .stt.deepgram import DeepgramSTT
+from .stt.config import STTConfig
 from .stt.pinned import PinnedWhisper
 from .tts_providers.factory import TTSConfig, create_tts_provider
 from .turndet import warm_up_vad
@@ -27,29 +28,22 @@ class STTFlow:
     """Configuration-backed completed-turn transcription."""
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self.config = dict(config or {})
-        self.provider_name = str(self.config.get("provider") or "faster_whisper")
-        self.timeout_seconds = float(self.config.get("timeout_seconds") or 30)
-        if self.timeout_seconds <= 0:
-            raise ValueError("stt.timeout_seconds must be positive")
+        self.config = STTConfig.from_mapping(config)
+        self.timeout_seconds = self.config.timeout_seconds
 
-        if self.provider_name in {"mlx", "faster_whisper"}:
-            kwargs = dict(self.config.get("kwargs") or {})
+        if self.config.provider in {"mlx", "faster_whisper"}:
             self.provider: PinnedWhisper | DeepgramSTT = PinnedWhisper(
-                mode=self.provider_name,
-                model_size=str(self.config.get("model") or self.config.get("model_size") or "tiny"),
-                language=str(self.config.get("language") or "en"),
-                **kwargs,
+                self.config,
             )
-        elif self.provider_name == "deepgram":
+        elif self.config.provider == "deepgram":
             self.provider = DeepgramSTT(
-                model=str(self.config.get("model") or "nova-2"),
-                language=str(self.config.get("language") or "en"),
-                smart_format=bool(self.config.get("smart_format", True)),
+                model=self.config.model or "nova-2",
+                language=self.config.language,
+                smart_format=bool(self.config.options.get("smart_format", True)),
                 timeout_s=self.timeout_seconds,
             )
         else:
-            raise ValueError(f"Unknown STT provider: {self.provider_name}")
+            raise ValueError(f"Unknown STT provider: {self.config.provider}")
 
     async def wait_ready(self) -> None:
         if isinstance(self.provider, PinnedWhisper):

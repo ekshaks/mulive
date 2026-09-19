@@ -15,6 +15,7 @@ from typing import Protocol, TypeVar
 from .audio_output import SpeechResult
 from .voice_engine import run_voice_turn
 from .stt.pinned import PinnedWhisper
+from .stt.config import STTConfig
 from .token_signing import decode_json, encode_json, sign, signature_matches
 from .turn import ResponseContext, SpeechStarted, TurnContext, VoiceTurn
 from .turn_source import PTTTurnSource, VoiceInput, WebSocketVADSource
@@ -79,16 +80,17 @@ class STT_LLM_TTS_Flow:
 
     def __init__(self, *, config: dict | None = None):
         config = config or {}
-        stt_config = config.get("stt") or {}
+        stt_values = config.get("stt") or {}
         tts_config = config.get("tts") or {}
         models_config = config.get("models") or {}
-        self.stt = PinnedWhisper(
-            mode=stt_config.get("provider") or os.getenv("MULIVE_VOICE_STT_MODE", "faster_whisper"),
-            model_size=stt_config.get("model_size") or os.getenv("MULIVE_VOICE_STT_MODEL", "tiny"),
-            language=stt_config.get("language", "en"),
+        stt_config = STTConfig.from_mapping(
+            stt_values,
+            default_provider=os.getenv("MULIVE_VOICE_STT_PROVIDER", "faster_whisper"),
+            default_variant=os.getenv("MULIVE_VOICE_STT_VARIANT", "tiny"),
         )
-        self.stt_timeout_seconds = float(stt_config.get("timeout_seconds") or os.getenv("MULIVE_VOICE_STT_TIMEOUT_SECONDS", "30"))
-        self.stt_load_timeout_seconds = float(stt_config.get("load_timeout_seconds") or os.getenv("MULIVE_VOICE_STT_LOAD_TIMEOUT_SECONDS", "180"))
+        self.stt = PinnedWhisper(stt_config)
+        self.stt_timeout_seconds = float(stt_values.get("timeout_seconds") or os.getenv("MULIVE_VOICE_STT_TIMEOUT_SECONDS", "30"))
+        self.stt_load_timeout_seconds = float(stt_values.get("load_timeout_seconds") or os.getenv("MULIVE_VOICE_STT_LOAD_TIMEOUT_SECONDS", "180"))
         if self.stt_timeout_seconds <= 0 or self.stt_load_timeout_seconds <= 0:
             raise ValueError("voice STT timeouts must be positive")
         self.llm_model = models_config.get("text") or os.getenv("MULIVE_VOICE_LLM_MODEL", "openai/gpt-oss-20b")

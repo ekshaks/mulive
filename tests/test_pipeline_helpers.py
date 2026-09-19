@@ -7,6 +7,7 @@ import reactivex
 from reactivex.subject import Subject
 
 from mulive.core.audio_output import AudioChunk
+from mulive.core.events import TranscriptEvent
 from mulive.core.pipeline_helpers import add_text_sinks, add_tts, non_empty_text, to_user
 from mulive.core.stream_dsl import Stream, SubGroup
 from mulive.core.tts_providers import TTSConfig
@@ -24,9 +25,13 @@ class FakeAudioOutput:
 
 
 class PipelineTextHelperTests(unittest.TestCase):
-    def test_non_empty_text_drops_empty_and_whitespace_values(self):
+    def test_non_empty_text_extracts_non_empty_transcript_text(self):
         received = []
-        stream = Stream.source(reactivex.from_iterable([None, "", "  ", "hello"]))
+        stream = Stream.source(reactivex.from_iterable([
+            TranscriptEvent(text="", is_final=True),
+            TranscriptEvent(text="  ", is_final=True),
+            TranscriptEvent(text="hello", is_final=True),
+        ]))
 
         (stream | non_empty_text()).observable.subscribe(received.append)
 

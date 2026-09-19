@@ -16,6 +16,7 @@ from mulive.core.stream_dsl import (
     turn_detector,
     stt,
 )
+from mulive.core.stt import STTConfig
 from mulive.core.tts_providers import KokoroFastApiTTSProvider, PlaybackState, tts_sink
 
 
@@ -208,11 +209,12 @@ async def run_mic_pipeline(args):
             lambda: playback_state.is_playing_or_recent(args.echo_suppress_seconds),
             name="drop_tts_feedback",
         )
-    transcripts = audio | stt(
+    stt_config = STTConfig(
         provider=args.stt_provider,
         model=args.stt_model,
-        model_size=args.model_size,
+        variant=args.model_variant,
     )
+    transcripts = audio | stt(stt_config)
     user_text = transcripts | final_transcript_text()
 
     user_text.to(print_sink(prefix="User: "), name="print_user_text", subs=subs)
@@ -328,10 +330,10 @@ async def run_mic_pipeline(args):
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the basic DSL pipeline from local microphone input.")
     parser.add_argument("--sample-rate", type=int, default=16000)
-    parser.add_argument("--block-size", type=int, help="Audio callback size; defaults to a 10 ms AEC frame.")
-    parser.add_argument("--model-size", default="tiny")
     parser.add_argument("--stt-provider", default="mlx")
     parser.add_argument("--stt-model")
+    parser.add_argument("--model-variant", default="tiny")
+    parser.add_argument("--block-size", type=int, help="Audio callback size; defaults to a 10 ms AEC frame.")
     parser.add_argument("--tts", action="store_true", help="Speak transcribed text with Kokoro TTS.")
     parser.add_argument("--echo-suppress-seconds", type=float, default=2.0)
     parser.add_argument("--allow-interruptions", action="store_true", help="Keep VAD active during TTS so speech can interrupt playback.")

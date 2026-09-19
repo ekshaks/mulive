@@ -12,6 +12,7 @@ import numpy as np
 
 from ..events import TranscriptEvent
 from ..logging_utils import monitor_time
+from .config import STTConfig
 
 DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen"
 
@@ -99,24 +100,20 @@ def _transcript_from_response(payload: dict) -> str:
 
 
 def deepgram_stt(
+    config: STTConfig,
     name: str = "deepgram_stt",
-    model: str = "nova-2",
-    language: str = "en",
-    smart_format: bool = True,
-    timeout_s: float = 20.0,
     on_status=None,
-    **kwargs,
 ):
     """Create an async final-transcript stage backed by Deepgram REST STT."""
 
     from ..stream_dsl import async_map_stage
 
     client = DeepgramSTT(
-        model=model,
-        language=language,
-        smart_format=smart_format,
-        timeout_s=timeout_s,
-        **kwargs,
+        model=config.model or "nova-2",
+        language=config.language,
+        smart_format=bool(config.options.get("smart_format", True)),
+        timeout_s=config.timeout_seconds,
+        **{key: value for key, value in config.options.items() if key != "smart_format"},
     )
 
     async def transcribe_turn(segment):
@@ -126,10 +123,10 @@ def deepgram_stt(
             text = await asyncio.to_thread(client.transcribe_turn, samples)
         except Exception as exc:
             if on_status:
-                on_status("error", {"model": model, "reason": str(exc)})
+                on_status("error", {"model": config.model_label, "reason": str(exc)})
             return TranscriptEvent(text="", is_final=True, context=context)
         if on_status:
-            on_status("ready", {"model": model})
+            on_status("ready", {"model": config.model_label})
         return TranscriptEvent(text=text, is_final=True, context=context)
 
     return async_map_stage(transcribe_turn, name=name)

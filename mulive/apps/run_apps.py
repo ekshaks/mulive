@@ -7,6 +7,7 @@ from mulive.core.auth import AppAuthentication
 from mulive.core.server_config import web_config
 from mulive.core.user_profiles import load_user_directory
 from mulive.core.runtime_paths import users_path
+from mulive.core.stt import STTConfig
 from mulive.server.server_asyncio import Server
 from mulive._resources import packaged_path
 
@@ -20,12 +21,12 @@ def _collect_warm_up_targets(registry):
     """Scan enabled apps' merged configs for STT / TTS pairs to preload.
 
     Returns ``(stt_targets, tts_providers)`` where ``stt_targets`` is a
-    dedup'd list of ``(provider, model_size, stt_kwargs_tuple)`` tuples
+    deduplicated list of STT configurations
     and ``tts_providers`` is a set of provider names. Only providers
     whose in-process warm-up meaningfully moves cost off the hot path
     are considered.
     """
-    stt_targets: list[tuple] = []
+    stt_targets: list[STTConfig] = []
     seen_stt: set[tuple] = set()
     tts_providers: set[str] = set()
 
@@ -35,14 +36,14 @@ def _collect_warm_up_targets(registry):
 
         provider = stt.get("provider")
         if provider == "faster_whisper":
-            model_size = stt.get("model_size", "base")
-            kwargs = stt.get("kwargs") or {}
-            # dict -> stable tuple key for dedup + kwargs pass-through.
-            kwargs_key = tuple(sorted(kwargs.items()))
-            key = (provider, model_size, kwargs_key)
+            config = STTConfig.from_mapping(stt, default_variant="base")
+            key = (
+                config.provider, config.model, config.variant, config.language,
+                config.timeout_seconds, tuple(sorted(config.options.items())),
+            )
             if key not in seen_stt:
                 seen_stt.add(key)
-                stt_targets.append(key)
+                stt_targets.append(config)
 
         if tts.get("enabled", True):
             tts_provider = tts.get("provider")
@@ -55,12 +56,12 @@ def _collect_warm_up_targets(registry):
 def _warm_up_from_registry(registry, infra):
     """Run STT / VAD / TTS warm-up hooks for the enabled apps.
 
-    Guarded by ``mulive.warm_up: true`` in the merged infra config.
+    Guarded by ``server.warm_up: true`` in the merged infra config.
     ``silero_backend: onnx`` in the infra flips the VAD backend env var
     before any inference runs.
     """
     server = infra.get("server") or {}
-    if not bool(mulive.get("warm_up", False)):
+    if not bool(server.get("warm_up", False)):
         return
 
     silero_backend = infra.get("silero_backend")
@@ -69,10 +70,10 @@ def _warm_up_from_registry(registry, infra):
 
     stt_targets, tts_providers = _collect_warm_up_targets(registry)
 
-    for provider, model_size, kwargs_key in stt_targets:
+    for stt_config in stt_targets:
         from mulive.core.stt.whisper import warm_up as _warm_stt
 
-        _warm_stt(mode=provider, model_size=model_size, **dict(kwargs_key))
+        _warm_stt(stt_config)
 
     if os.environ.get("SILERO_BACKEND", "torch").lower() == "onnx":
         from mulive.core.turndet import warm_up_vad as _warm_vad
@@ -124,10 +125,10 @@ def main():
     host = args.host or server_config.pop("host", "0.0.0.0")
     port = args.port or int(server_config.pop("port", 9000))
 
-    # Preload heavyweight models (Whisper / Silero VAD / Kokoro-ONNX / Piper)
+    # Preload heavyweight models (STT / Silero VAD / Kokoro-ONNX / Piper)
     # before the WebRTC listener is opened, so first-connect and first-speech
     # don't pay lazy-load latency on the user's hot path. Opt-in via
-    # ``mulive.warm_up: true`` in the merged infra config.
+    # ``server.warm_up: true`` in the merged infra config.
     _warm_up_from_registry(registry, catalog)
 
     server = Server(

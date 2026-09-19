@@ -12,6 +12,7 @@ from mulive.apps.prompts import (
     extract_json_object,
     load_prompt_instructions,
     load_prompt_request,
+    load_system_prompt,
 )
 from mulive.apps.qa import Ask, Refusal, Verdict, severity_for
 from mulive.core.stream_dsl import Stream, SubGroup
@@ -205,6 +206,15 @@ class PromptsTests(unittest.TestCase):
     def test_load_both_sections(self):
         self.assertEqual(load_prompt_instructions(self.path, "coach_best"), "Be kind.")
         self.assertEqual(load_prompt_request(self.path, "coach_best"), "Position: {fen}")
+
+    def test_load_system_prompt_includes_description(self):
+        self.path.write_text(
+            "coach_best:\n  description: Be precise.\n  instructions: Be kind.\n"
+        )
+        self.assertEqual(
+            load_system_prompt(self.path, "coach_best"),
+            "Be precise.\n\nBe kind.",
+        )
 
     def test_missing_prompt_raises(self):
         with self.assertRaises(ValueError):

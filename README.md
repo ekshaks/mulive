@@ -41,7 +41,7 @@ microphone → utterance detection → speech recognition → response → speec
 ```
 
 The response can be a direct stream transformation, normal application code,
-or a model-backed `Agent`. Start with the direct path so each boundary is
+or a model-backed `ConversationHarness`. Start with the direct path so each boundary is
 visible.
 
 This guide uses five terms consistently. An **utterance** is one piece of user
@@ -65,10 +65,13 @@ output. Without `GROQ_API_KEY`, the quickstart echoes each recognized utterance.
 The core flow is:
 
 ```python
+from mulive.core.stt import STTConfig
+
 audio = Stream.source(session.audio_input, name="audio")
 turn = audio | turn_detector()
-transcripts = turn.value | stt(provider="faster_whisper", model_size="small")
-user_text = transcripts | final_transcript_text()
+transcripts = turn.value | stt(STTConfig(provider="faster_whisper", variant="small"))
+final_transcripts = transcripts | filter_items(lambda event: event.is_final)
+user_text = final_transcripts | non_empty_text()
 
 user_text | to_user(session=session, role="user", subs=subs)
 user_text | to_user(
@@ -83,30 +86,39 @@ then return the same text as the response through the display and speech output.
 
 ### Let an LLM control responses
 
-Use `Agent` when responses need conversation history and a language model. The
+Use `ConversationHarness` when responses need conversation history and a language model. The
 audio, utterance detection, speech recognition, and speech output stay the same.
 Only the response step changes:
 
 ```python
-from mulive.apps.agent import Agent
+from mulive.apps.conversation_harness import ConversationHarness
+
+async def lookup_order(order_id: str) -> dict:
+    """Return order data without changing it."""
+    return {"order_id": order_id, "status": "shipped"}
 
 final_transcripts = transcripts | filter_items(lambda event: event.is_final)
-user_text = final_transcripts | map_items(lambda event: event.text) | non_empty_text()
+user_text = final_transcripts | non_empty_text()
 
-agent = Agent(llm_timeout_s=30)
-agent.connect(final_transcripts, turn.started)
+conversation = ConversationHarness(
+    system_prompt="You are a helpful voice assistant.",
+    llm_timeout_s=30,
+    tools=(lookup_order,),
+)
+# Connect the transcript stream and turn started signal to the conversation harness
+conversation.connect(final_transcripts, turn.started)
 
 user_text | to_user(session=session, role="user", subs=subs)
-agent.assistant_text | to_user(
+conversation.assistant_text | to_user(
     session=session, role="assistant", subs=subs,
     tts=tts_config, tts_provider=tts_provider, interrupts=turn.started,
 )
-agent.client_events.to(client_message_sink(session), subs=subs)
-agent.start()
+conversation.client_events.to(client_message_sink(session), subs=subs)
+conversation.start()
 ```
 
-Install the Groq integration and set its key before running the same browser
-quickstart:
+Install Pydantic AI Slim with its Groq provider, then set its key before running
+the same browser quickstart:
 
 ```bash
 pip install "mulive[groq]"
@@ -114,15 +126,24 @@ export GROQ_API_KEY="your-key"
 python -m mulive.quickstart.web --http --tts-browser
 ```
 
-`Agent` owns conversation history and runs one model call at a time. A new
+`ConversationHarness` owns conversation history and runs one model call at a time. A new
 utterance stops current speech output but does not cancel model work. If the
-user asks another question while a call is running, the agent acknowledges it
+user asks another question while a call is running, the harness acknowledges it
 and waits for the call or its 30-second timeout before answering the newer
 utterance.
 
+The harness delegates each request to a `ModelRunner`. The default
+`PydanticAIModelRunner` supports registered synchronous and asynchronous Python
+tool calls. Pass allowed functions through `tools`. The model can request a
+tool, receive its return value, and then produce the response. The tool function
+still defines what data it can read or change.
+
+If that optional package is unavailable when LLM control is requested, Mulive
+emits a runtime warning and continues with transcript echo.
+
 The web quickstart uses Faster-Whisper `small` for recognition. Add
 `--tts-browser` or `--tts-local` to send speech output through the browser or
-the server's speakers. Override the recognition model with `--model-size`, use
+the server's speakers. Override the recognition model with `--model-variant`, use
 `--stt-provider mlx` on Apple Silicon, and change Groq's model with
 `--llm-model`. Change the model timeout with `--llm-timeout-s`.
 
@@ -173,7 +194,7 @@ Kokoro-FastAPI first, then:
 
 ```bash
 pip install "mulive[local-audio,openai]"
-python -m mulive.quickstart.mic --stt-provider faster_whisper --model-size small --tts --allow-interruptions
+python -m mulive.quickstart.mic --stt-provider faster_whisper --model-variant small --tts --allow-interruptions
 ```
 
 For MLX on Apple Silicon, add the `mlx` extra and use `--stt-provider mlx`.

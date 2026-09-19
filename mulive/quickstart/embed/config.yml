@@ -1,6 +1,6 @@
 stt:
   provider: faster_whisper
-  model_size: tiny
+  variant: tiny
   language: en
 
 vad:

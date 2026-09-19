@@ -4,8 +4,9 @@ import io
 import time
 from dataclasses import dataclass
 
-import yaml
 from PIL import Image as PILImage
+
+from mulive.apps.prompts import load_system_prompt
 
 from .logging_utils import log_text_block, monitor_log, monitor_time
 from .utils import timeit
@@ -20,14 +21,9 @@ class DirectAgent:
 
 
 def create_agent(model_id, prompts_path, prompt_id, name="Agent") -> DirectAgent:
-    with open(prompts_path) as f:
-        prompts = yaml.safe_load(f) or {}
-    prompt = prompts[prompt_id]
     if not (model_id.startswith("gemini:") or model_id.startswith("groq:")):
         raise ValueError(f"Unknown model: {model_id}")
-    system_prompt = "\n\n".join(
-        value for value in (prompt.get("description"), prompt.get("instructions")) if value
-    )
+    system_prompt = load_system_prompt(prompts_path, prompt_id)
     return DirectAgent(model_id=model_id, system_prompt=system_prompt)
 
 

@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from ..logging_utils import monitor_log
+from .config import STTConfig
 
 
 class PinnedWhisper:
@@ -22,16 +23,14 @@ class PinnedWhisper:
     runtime stays side-effect free.
 
     Args:
-        mode: ``mlx`` or ``faster_whisper``.
-        model_size: Whisper model size or id.
-        **kwargs: Backend options passed to :class:`~mulive.core.stt.whisper.WhisperSTT`.
+        config: Local Whisper provider and model configuration.
     """
 
-    def __init__(self, mode: str = "mlx", model_size: str = "tiny", **kwargs):
-        self.mode = mode
-        self.model_size = model_size
-        self.kwargs = kwargs
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{mode}-whisper")
+    def __init__(self, config: STTConfig):
+        self.config = config
+        self.executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"{config.provider}-whisper"
+        )
         self._stt_future = None
 
     def _start_loading(self):
@@ -44,7 +43,7 @@ class PinnedWhisper:
         """Build the model. Runs on the worker thread."""
         from .whisper import WhisperSTT
 
-        return WhisperSTT(mode=self.mode, model_size=self.model_size, **self.kwargs)
+        return WhisperSTT(self.config)
 
     def _log_load(self, future) -> None:
         """Log a failed load as soon as it happens, not on the first utterance."""
@@ -53,7 +52,7 @@ class PinnedWhisper:
         error = future.exception()
         if error is not None:
             monitor_log(
-                f"stt model load failed mode={self.mode} model={self.model_size} "
+                f"stt model load failed provider={self.config.provider} model={self.config.model_label} "
                 f"error={type(error).__name__}: {error}"
             )
 

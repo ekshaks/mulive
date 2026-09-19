@@ -213,38 +213,26 @@ def check_stt_provider(provider: str) -> None:
         raise ValueError(f"Unknown STT provider: {provider}")
 
 
-def stt(
-    provider: str = "faster_whisper",
-    *,
-    name: str = "stt",
-    model: Optional[str] = None,
-    model_size: str = "tiny",
-    language: str = "en",
-    **kwargs,
-):
-    """Create an STT stage that emits final :class:`TranscriptEvent` values."""
+def stt(config, *, name: str = "stt", on_status=None, debug_audio_dir=None):
+    """Create an STT stage from one :class:`STTConfig`."""
+    from .stt.config import STTConfig
 
-    provider = provider.lower()
-    if provider == "deepgram":
+    if not isinstance(config, STTConfig):
+        raise TypeError("stt requires an STTConfig")
+    if config.provider == "deepgram":
         from .stt.deepgram import deepgram_stt
 
-        return deepgram_stt(
-            name=name,
-            model=model or "nova-2",
-            language=language,
-            **kwargs,
-        )
-    if provider in {"mlx", "faster_whisper"}:
+        return deepgram_stt(config, name=name, on_status=on_status)
+    if config.provider in {"mlx", "faster_whisper"}:
         from .stt.whisper import whisper_stt
 
         return whisper_stt(
+            config,
             name=name,
-            mode=provider,
-            model_size=model or model_size,
-            language=language,
-            **kwargs,
+            on_status=on_status,
+            debug_audio_dir=debug_audio_dir,
         )
-    raise ValueError(f"Unknown STT provider: {provider}")
+    raise ValueError(f"Unknown STT provider: {config.provider}")
 
 
 def whisper_stt(*args, **kwargs):

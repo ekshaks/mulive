@@ -2,7 +2,7 @@ import re
 
 from .logging_utils import log_text_block, monitor_log
 from .events import ClientTranscriptMessage
-from .stream_dsl import client_message_sink, expand_items, filter_items, map_items
+from .stream_dsl import client_message_sink, expand_items, map_filter_items, map_items
 from .tts_providers import tts_sink
 from .tts_providers.factory import TTSConfig
 
@@ -16,8 +16,12 @@ def _has_non_empty_text(text):
 
 
 def non_empty_text(name="non_empty_text"):
-    """Keep text values that contain a non-whitespace character."""
-    return filter_items(_has_non_empty_text, name=name)
+    """Extract non-whitespace text from transcript events."""
+    return map_filter_items(
+        map_fn=lambda event: event.text,
+        filter_fn=_has_non_empty_text,
+        name=name,
+    )
 
 
 def split_spoken_phrases(text):

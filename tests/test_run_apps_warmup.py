@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from mulive.apps.loader import load_app_catalog
 from mulive.apps.run_apps import _collect_warm_up_targets, _warm_up_from_registry
+from mulive.core.stt import STTConfig
 
 
 def _write(path: Path, content: str) -> None:
@@ -26,12 +27,12 @@ def _make_bundle(
     name: str,
     *,
     stt_provider: str = "faster_whisper",
-    stt_model_size: str = "base",
+    stt_variant: str = "base",
     stt_kwargs: dict | None = None,
     tts_provider: str = "kokoro_onnx",
     tts_enabled: bool = True,
 ) -> None:
-    stt_yaml = f"stt:\n  provider: {stt_provider}\n  model_size: {stt_model_size}\n"
+    stt_yaml = f"stt:\n  provider: {stt_provider}\n  variant: {stt_variant}\n"
     if stt_kwargs:
         pairs = "\n".join(f"    {k}: {v}" for k, v in stt_kwargs.items())
         stt_yaml += f"  kwargs:\n{pairs}\n"
@@ -90,19 +91,19 @@ class WarmUpScanTests(unittest.TestCase):
             stt, tts = _collect_warm_up_targets(registry)
             self.assertEqual(
                 stt,
-                [("faster_whisper", "base", (("compute_type", "int8"),))],
+                [STTConfig(provider="faster_whisper", variant="base", options={"compute_type": "int8"})],
             )
             self.assertEqual(tts, {"kokoro_onnx"})
 
     def test_keeps_distinct_stt_configs(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_bundle(root, "alpha", stt_model_size="base")
-            _make_bundle(root, "beta", stt_model_size="small")
+            _make_bundle(root, "alpha", stt_variant="base")
+            _make_bundle(root, "beta", stt_variant="small")
             registry, _ = self._load(root)
             stt, _ = _collect_warm_up_targets(registry)
-            sizes = sorted(size for _, size, _ in stt)
-            self.assertEqual(sizes, ["base", "small"])
+            variants = sorted(config.variant for config in stt)
+            self.assertEqual(variants, ["base", "small"])
 
     def test_skips_disabled_tts_and_non_streaming_kokoro_fastapi(self):
         with TemporaryDirectory() as tmp:
@@ -123,11 +124,9 @@ class WarmUpScanTests(unittest.TestCase):
             self.assertEqual(tts, {"piper"})
 
     def test_skips_mlx_stt(self):
-        # MLX is Apple-Silicon-only and loads lazily inside WhisperSTT.__init__;
-        # the warm-up scan must not try to preload it.
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _make_bundle(root, "alpha", stt_provider="mlx", stt_model_size="turbo")
+            _make_bundle(root, "alpha", stt_provider="mlx", stt_variant="turbo")
             registry, _ = self._load(root)
             stt, _ = _collect_warm_up_targets(registry)
             self.assertEqual(stt, [])
@@ -148,7 +147,7 @@ class WarmUpScanTests(unittest.TestCase):
                 root,
                 "alpha",
                 stt_provider="mlx",
-                stt_model_size="turbo",
+                stt_variant="turbo",
                 tts_provider="kokoro_fastapi",
             )
             catalog_path = _make_catalog(

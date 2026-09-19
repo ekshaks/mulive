@@ -8,6 +8,7 @@ import numpy as np
 
 from ..events import TranscriptEvent
 from ..logging_utils import monitor_log, monitor_time
+from .config import STTConfig
 
 #: The pip package each local backend needs. ``mlx-whisper`` is Apple-Silicon only
 #: and is not in requirements.txt, so a config asking for it on another machine —
@@ -15,15 +16,20 @@ from ..logging_utils import monitor_log, monitor_time
 BACKEND_PACKAGES = {"mlx": "mlx_whisper", "faster_whisper": "faster_whisper"}
 
 
-# Cache Whisper models keyed by (mode, model_size, model_id, frozen kwargs).
+# Cache Whisper models keyed by provider, variant, explicit model, and options.
 # Loading a faster-whisper base int8 model takes ~1-3 s on a 1-vCPU box and
 # was previously repeated on every new browser connect because the pipeline
 # built a fresh WhisperSTT per session — the visible "hang on URL connect".
 _WHISPER_MODEL_CACHE: dict = {}
 
 
-def _cache_key(mode, model_size, model_id, kwargs):
-    return (mode, model_size, model_id, tuple(sorted(kwargs.items())))
+def _cache_key(config: STTConfig):
+    return (
+        config.provider,
+        config.variant,
+        config.model,
+        tuple(sorted(config.options.items())),
+    )
 
 
 def get_faster_whisper_model(model_name: str = "base", compute_type: str = "int8", **kwargs):
@@ -39,34 +45,40 @@ def get_faster_whisper_model(model_name: str = "base", compute_type: str = "int8
     return WhisperModel(model_name, compute_type=compute_type, **kwargs)
 
 
-def get_whisper_model(mode="faster_whisper", model_size: str = "base", model_id=None, **kwargs):
-    """Return a process-wide singleton Whisper model for the given config.
+def get_whisper_model(config: STTConfig):
+    """Return a process-wide singleton Whisper model for one configuration.
 
-    Second and later callers with the same (mode, model_size, model_id, kwargs)
+    Second and later callers with the same configuration
     share the same underlying model handle, so multiple WebRTC sessions do
     not each reload the weights.
     """
-    key = _cache_key(mode, model_size, model_id, kwargs)
+    if config.provider not in {"faster_whisper", "mlx"}:
+        raise ValueError(f"Whisper does not support STT provider: {config.provider}")
+    key = _cache_key(config)
     cached = _WHISPER_MODEL_CACHE.get(key)
     if cached is not None:
         return cached
-    if mode == "faster_whisper":
-        model = get_faster_whisper_model(model_size, **kwargs)
-    elif mode == "mlx":
+    if config.provider == "faster_whisper":
+        model = get_faster_whisper_model(
+            config.model or config.variant or "tiny", **config.options
+        )
+    elif config.provider == "mlx":
         from .mlx import get_mlx_whisper_model
 
-        model = get_mlx_whisper_model(model_size=model_size, model_id=model_id)
-    else:
-        raise ValueError(f"Unknown Whisper mode: {mode}")
+        model = get_mlx_whisper_model(
+            model_variant=config.variant or "tiny", model_id=config.model
+        )
     _WHISPER_MODEL_CACHE[key] = model
     return model
 
 
-def warm_up(mode: str = "faster_whisper", model_size: str = "base", **kwargs) -> None:
-    """Preload the Whisper model so the first session doesn't pay for it."""
+def warm_up(config: STTConfig) -> None:
+    """Preload a thread-safe local STT model before the first session."""
+    if config.provider in {"deepgram", "mlx"}:
+        return
     started = time.perf_counter()
-    get_whisper_model(mode, model_size, **kwargs)
-    print(f"Whisper ({mode}/{model_size}) warmed up in {time.perf_counter() - started:.2f} s")
+    get_whisper_model(config)
+    print(f"Whisper ({config.provider}/{config.model_label}) warmed up in {time.perf_counter() - started:.2f} s")
 
 
 def infer_faster_whisper(audio_data, model, language="en"):
@@ -87,18 +99,15 @@ def infer_whisper(mode, audio_data, model, language="en"):
 class WhisperSTT:
     """Run a local Whisper model against one completed audio segment."""
 
-    def __init__(self, mode="faster_whisper", model_size: str = "base", language: str = "en", **kwargs):
-        self.mode = mode
-        self.model_size = model_size
-        self.kwargs = kwargs
-        self.language = language
+    def __init__(self, config: STTConfig):
+        self.config = config
         self._model = None
         _ = self.model
 
     @property
     def model(self):
         if self._model is None:
-            self._model = get_whisper_model(self.mode, self.model_size, **self.kwargs)
+            self._model = get_whisper_model(self.config)
         return self._model
 
     def transcribe_turn(self, samples: np.ndarray) -> str:
@@ -106,13 +115,15 @@ class WhisperSTT:
             return ""
         start_time = time.perf_counter()
         audio_fp32 = samples.astype(np.float32) / 32768.0
-        result = infer_whisper(self.mode, audio_fp32, self.model, language=self.language)
+        result = infer_whisper(
+            self.config.provider, audio_fp32, self.model, language=self.config.language
+        )
         monitor_time(
             "stt",
             "transcribe",
             time.perf_counter() - start_time,
-            provider=self.mode,
-            model=self.model_size,
+            provider=self.config.provider,
+            model=self.config.model_label,
         )
         return result
 
@@ -163,7 +174,7 @@ def notify(on_status, result: str, data: dict) -> None:
         monitor_log(f"stt status callback failed result={result} error={type(exc).__name__}: {exc}")
 
 
-def transcription_failed(reason: str, model_size: str, on_status) -> TranscriptEvent:
+def transcription_failed(reason: str, config: STTConfig, on_status) -> TranscriptEvent:
     """Report one failed transcription and keep the stream alive.
 
     Returning an empty final transcript rather than raising matters: the transcript
@@ -173,37 +184,31 @@ def transcription_failed(reason: str, model_size: str, on_status) -> TranscriptE
 
     Args:
         reason: What went wrong, in words.
-        model_size: The model that was being used, for the log line.
+        config: The model configuration used for the log line.
         on_status: Optional ``(result, data)`` callback into the browser.
 
     Returns:
         An empty final :class:`~mulive.core.events.TranscriptEvent`.
     """
-    monitor_log(f"stt transcription failed model={model_size} reason={reason}")
-    notify(on_status, "error", {"model_size": model_size, "reason": reason})
+    monitor_log(f"stt transcription failed model={config.model_label} reason={reason}")
+    notify(on_status, "error", {"model": config.model_label, "reason": reason})
     return TranscriptEvent(text="", is_final=True)
 
 
 def whisper_stt(
+    config: STTConfig,
     name: str = "whisper_stt",
-    model_size: str = "tiny",
-    mode: str = "mlx",
     debug_audio_dir=None,
-    timeout_s: float = 20.0,
     on_status=None,
-    **kwargs,
 ):
     """Create a final-transcript stage backed by a local Whisper provider.
 
     Args:
         name: Stage name, for logs.
-        model_size: Whisper model size or id.
-        mode: ``mlx`` or ``faster_whisper``.
+        config: Local Whisper provider and model configuration.
         debug_audio_dir: Optional directory to dump each segment into.
-        timeout_s: How long one segment may take before it is given up on.
         on_status: Optional ``(result, data)`` callback: ``loading`` / ``ready`` /
             ``error``, forwarded to the browser.
-        **kwargs: Backend options (``compute_type``, ``cpu_threads``, ``language``).
 
     Returns:
         A Stream DSL stage mapping audio segments to final transcripts.
@@ -212,13 +217,13 @@ def whisper_stt(
         RuntimeError: When the backend package is not installed.
         ValueError: When ``mode`` is not a known backend.
     """
-    require_backend(mode)
+    require_backend(config.provider)
     from ..stream_dsl import _dump_stt_audio, async_map_stage
     from .pinned import PinnedWhisper
 
     # Both backends run on one pinned worker thread: model loading and inference stay
     # off the event loop, and only one segment is ever being transcribed at a time.
-    backend = PinnedWhisper(mode=mode, model_size=model_size, **kwargs)
+    backend = PinnedWhisper(config)
 
     async def transcribe_turn(segment):
         context = getattr(segment, "context", None)
@@ -226,14 +231,18 @@ def whisper_stt(
         if debug_audio_dir:
             _dump_stt_audio(samples, debug_audio_dir)
         if backend.is_loading():
-            notify(on_status, "loading", {"model_size": model_size})
+            notify(on_status, "loading", {"model": config.model_label})
         try:
-            text = await asyncio.wait_for(backend.transcribe_turn(samples), timeout=timeout_s)
+            text = await asyncio.wait_for(
+                backend.transcribe_turn(samples), timeout=config.timeout_seconds
+            )
         except asyncio.TimeoutError:
-            return transcription_failed(f"timed out after {timeout_s:g}s", model_size, on_status)
+            return transcription_failed(
+                f"timed out after {config.timeout_seconds:g}s", config, on_status
+            )
         except Exception as exc:  # noqa: BLE001 - one bad segment must not deafen us
-            return transcription_failed(f"{type(exc).__name__}: {exc}", model_size, on_status)
-        notify(on_status, "ready", {"model_size": model_size})
+            return transcription_failed(f"{type(exc).__name__}: {exc}", config, on_status)
+        notify(on_status, "ready", {"model": config.model_label})
         return TranscriptEvent(text=text or "", is_final=True, context=context)
 
     return async_map_stage(transcribe_turn, name=name, on_dispose=backend.shutdown)

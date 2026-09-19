@@ -6,6 +6,7 @@ from mulive.core.llm_utils import call_llm, create_agent
 from mulive.core.multimodal_pipeline import WebRTCVoiceTurnRunner
 from mulive.core.tts_providers import TTSConfig, create_tts_provider
 from mulive.core.stream_dsl import Stream, SubGroup, final_transcripts, stt, turn_detector
+from mulive.core.stt import STTConfig
 from mulive.core.server_config import web_config
 from mulive._resources import packaged_path
 
@@ -16,11 +17,7 @@ async def run_multimodal_session(
     session,
     *,
     mode="av",
-    stt_provider="faster_whisper",
-    stt_model_size="tiny",
-    stt_model=None,
-    stt_language="en",
-    stt_kwargs=None,
+    stt_config: STTConfig = STTConfig(),
     llm_model,
     prompts_path=PROMPTS_FILE,
     prompt_id="visual_solver",
@@ -36,13 +33,7 @@ async def run_multimodal_session(
         name="latest_frame", subs=subs
     )
     turn = Stream.source(session.audio_input, name="audio") | turn_detector()
-    transcripts = turn.value | stt(
-        provider=stt_provider,
-        model=stt_model,
-        model_size=stt_model_size,
-        language=stt_language,
-        **(stt_kwargs or {}),
-    )
+    transcripts = turn.value | stt(stt_config)
     completed = transcripts | final_transcripts()
     agent = create_agent(
         llm_model,
@@ -94,21 +85,13 @@ async def run_session(
     mode="av",
     tts_mode=None,
     tts_provider="kokoro_onnx",
-    stt_model_size="tiny",
-    stt_provider="mlx",
-    stt_model=None,
-    stt_language="en",
-    stt_kwargs=None,
+    stt_config: STTConfig = STTConfig(provider="mlx"),
     llm_model="groq:meta-llama/llama-4-scout-17b-16e-instruct",
 ):
     await run_multimodal_session(
         session,
         mode=mode,
-        stt_provider=stt_provider,
-        stt_model_size=stt_model_size,
-        stt_model=stt_model,
-        stt_language=stt_language,
-        stt_kwargs=stt_kwargs,
+        stt_config=stt_config,
         llm_model=llm_model,
         prompts_path=PROMPTS_FILE,
         prompt_id="visual_solver",
@@ -150,7 +133,7 @@ def _parse_kv_list(pairs):
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the multimodal DSL WebRTC pipeline.")
     parser.add_argument("--mode", choices=["a", "av"], default="av")
-    parser.add_argument("--stt-model-size", default="tiny")
+    parser.add_argument("--model-variant", default="tiny")
     parser.add_argument("--stt-provider", default="faster_whisper",
                         help="STT provider: mlx | faster_whisper | deepgram")
     parser.add_argument("--stt-model")
@@ -216,21 +199,25 @@ if __name__ == "__main__":
     )
 
     stt_kwargs = _parse_kv_list(args.stt_kwarg)
+    stt_config = STTConfig(
+        provider=args.stt_provider,
+        model=args.stt_model,
+        variant=args.model_variant,
+        language=args.stt_language,
+        options=stt_kwargs,
+    )
 
-    # Warm up every heavyweight model BEFORE accepting connections, but only
-    # for the small-server (AWS) providers where lazy first-use blocks the
-    # user's hot path:
+    # Warm up heavyweight local models before accepting connections.
     #
-    #   * faster-whisper — per-session load is 1-3 s on 1 vCPU (visible as
-    #     "browser hangs on connect"). MLX on desktop stays lazy: it was
-    #     already lazily loaded per WhisperSTT and is fast on Apple Silicon.
+    #   * Faster Whisper — model loading would otherwise block the first
+    #     utterance. MLX must load on its inference thread.
     #   * SILERO_BACKEND=onnx — first inference may download the ONNX model
     #     (visible as "mic hangs on first speech").
     #   * kokoro_onnx and Piper may need a first-use model load; warm them
     #     before accepting sessions when selected.
-    if args.stt_provider == "faster_whisper":
+    if stt_config.provider == "faster_whisper":
         from mulive.core.stt.whisper import warm_up as _warm_stt
-        _warm_stt(mode=args.stt_provider, model_size=args.stt_model_size, **stt_kwargs)
+        _warm_stt(stt_config)
     if os.environ.get("SILERO_BACKEND", "onnx").lower() == "onnx":
         from mulive.core.turndet import warm_up_vad as _warm_vad
         _warm_vad()
@@ -247,11 +234,7 @@ if __name__ == "__main__":
             mode=args.mode,
             tts_mode=tts_mode,
             tts_provider=args.tts_provider,
-            stt_model_size=args.stt_model_size,
-            stt_provider=args.stt_provider,
-            stt_model=args.stt_model,
-            stt_language=args.stt_language,
-            stt_kwargs=stt_kwargs,
+            stt_config=stt_config,
             llm_model=args.llm_model,
         ),
         config=config,

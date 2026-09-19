@@ -40,6 +40,7 @@ from mulive.core.stream_dsl import (
     turn_detector,
 )
 from mulive.core.stt.whisper import WhisperSTT, require_backend
+from mulive.core.stt import STTConfig
 
 SPOKEN_WORDS = "Knight to f 3"
 MODEL_SIZE = "small"
@@ -82,7 +83,7 @@ def cached_model_or_skip() -> None:
         unittest.SkipTest: When the weights are not in the local cache.
     """
     try:
-        WhisperSTT(mode="faster_whisper", model_size=MODEL_SIZE)
+        WhisperSTT(STTConfig(variant=MODEL_SIZE))
     except OSError as exc:
         # huggingface_hub raises LocalEntryNotFoundError (an OSError) when a model is
         # not cached and downloads are off.
@@ -120,13 +121,15 @@ class BackendAvailabilityTests(unittest.TestCase):
     )
     def test_building_the_stage_fails_instead_of_going_quiet(self):
         with self.assertRaises(RuntimeError):
-            stt(provider="mlx", model_size=MODEL_SIZE)
+            stt(STTConfig(provider="mlx", variant=MODEL_SIZE))
 
 
 class SpokenAudioTests(unittest.IsolatedAsyncioTestCase):
     """Real speech through the real turn detector and the real model."""
 
-    async def transcripts(self, *clips, expected: int = 1, **stt_kwargs) -> list[str]:
+    async def transcripts(
+        self, *clips, expected: int = 1, on_status=None, **config_values
+    ) -> list[str]:
         """Push each clip through turn detection and STT, and collect the text.
 
         Every clip goes through the *same* subscription, so a second clip really does
@@ -135,20 +138,21 @@ class SpokenAudioTests(unittest.IsolatedAsyncioTestCase):
         Args:
             *clips: 16 kHz mono int16 audio arrays, one per utterance.
             expected: How many transcripts to wait for.
-            **stt_kwargs: Overrides for the STT stage.
+            on_status: Optional status callback for the STT stage.
+            **config_values: Overrides for the STT configuration.
 
         Returns:
             The text of every final transcript, in order.
         """
         audio = Subject()
-        options = {"provider": "faster_whisper", "model_size": MODEL_SIZE}
-        options.update(stt_kwargs)
+        options = {"provider": "faster_whisper", "variant": MODEL_SIZE}
+        options.update(config_values)
         turn = Stream.source(audio) | turn_detector(
             is_speech_fn=lambda _chunk: True, silence_timeout=0.01, poll_interval=0.005
         )
         texts: list[str] = []
         subs = SubGroup()
-        (turn.value | stt(**options)).to(
+        (turn.value | stt(STTConfig.from_mapping(options), on_status=on_status)).to(
             lambda observable: observable.subscribe(lambda event: texts.append(event.text)),
             subs=subs,
         )
@@ -194,7 +198,7 @@ class SpokenAudioTests(unittest.IsolatedAsyncioTestCase):
             spoken_audio(SPOKEN_WORDS),
             spoken_audio(SPOKEN_WORDS),
             expected=2,
-            timeout_s=0.001,
+            timeout_seconds=0.001,
             on_status=lambda result, data: statuses.append((result, data)),
         )
         self.assertEqual(texts, ["", ""])

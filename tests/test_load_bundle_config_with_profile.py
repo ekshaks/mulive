@@ -31,7 +31,7 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
             """
             schema: 2
             defaults:
-              stt: { provider: mlx, model_size: turbo, language: en }
+              stt: { provider: mlx, variant: turbo, language: en }
               tts: { enabled: true, mode: browser, provider: kokoro_onnx }
             apps:
               - path: chess
@@ -41,7 +41,7 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
         _write(
             self.root / "apps.aws.yml",
             """
-            stt: { provider: faster_whisper, model_size: base }
+            stt: { provider: faster_whisper, variant: base }
             tts: { provider: piper }
             """,
         )
@@ -49,14 +49,14 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
             self.root / "chess" / "config.yml",
             """
             app: { name: chess }
-            stt: { model_size: small }
+            stt: { variant: small }
             models: { text: groq:foo }
             """,
         )
         _write(
             self.root / "chess" / "config.aws.yml",
             """
-            stt: { model_size: base }
+            stt: { variant: base }
             """,
         )
 
@@ -72,16 +72,16 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
             merged = self._config(self.root / "chess" / "config.yml")
         self.assertEqual(merged["tts"]["provider"], "kokoro_onnx")
         self.assertEqual(merged["stt"]["provider"], "mlx")
-        self.assertEqual(merged["stt"]["model_size"], "small")
+        self.assertEqual(merged["stt"]["variant"], "small")
 
     def test_aws_profile_overrides_per_app_via_config_aws_yml(self):
         with patch.dict(os.environ, {"MULIVE_PROFILE": "aws"}):
             merged = self._config(self.root / "chess" / "config.yml")
         self.assertEqual(merged["tts"]["provider"], "piper")
         self.assertEqual(merged["stt"]["provider"], "faster_whisper")
-        # The per-app AWS override lifts model_size back to base after the
+        # The per-app AWS override lifts variant back to base after the
         # per-app config.yml would have shadowed it with `small`.
-        self.assertEqual(merged["stt"]["model_size"], "base")
+        self.assertEqual(merged["stt"]["variant"], "base")
 
     def test_missing_catalog_falls_back_to_plain_load(self):
         # A config file outside any muapps tree loads as-is.
@@ -101,7 +101,7 @@ class TestLoadBundleConfigWithProfile(unittest.TestCase):
             merged = self._config(self.root / "chess" / "config.yml")
         # Only the per-app config.yml applies — no AWS override reached it.
         self.assertNotIn("tts", merged)
-        self.assertEqual(merged["stt"], {"model_size": "small"})
+        self.assertEqual(merged["stt"], {"variant": "small"})
 
 
 if __name__ == "__main__":

@@ -50,6 +50,31 @@ def load_prompt_instructions(prompts_path: Path, prompt_id: str) -> str:
     return _prompt_section(prompts_path, prompt_id, "instructions")
 
 
+def load_system_prompt(prompts_path: Path, prompt_id: str) -> str:
+    """Read the description and instructions used as a model system prompt.
+
+    Args:
+        prompts_path: Path to a bundle's ``prompts.yml``.
+        prompt_id: Top-level key naming the prompt.
+
+    Returns:
+        The non-empty description and instructions joined by blank lines.
+
+    Raises:
+        ValueError: When both prompt blocks are missing.
+    """
+    prompts = load_prompts(prompts_path)
+    prompt = prompts.get(prompt_id) or {}
+    text = "\n\n".join(
+        value.strip()
+        for value in (prompt.get("description"), prompt.get("instructions"))
+        if value and value.strip()
+    )
+    if not text:
+        raise ValueError(f"Missing prompt text: {prompt_id}")
+    return text
+
+
 def load_prompt_request(prompts_path: Path, prompt_id: str) -> str:
     """Read ``prompts[prompt_id].request``.
 

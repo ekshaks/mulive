@@ -118,7 +118,7 @@ class LoaderProfileTests(unittest.TestCase):
             schema: 2
             defaults:
               server: {https: true, host: 0.0.0.0, port: 9000}
-              stt: {provider: mlx, model_size: turbo}
+              stt: {provider: mlx, variant: turbo}
               tts: {enabled: true, provider: kokoro_onnx}
             apps:
               - path: demo
@@ -130,7 +130,7 @@ class LoaderProfileTests(unittest.TestCase):
             server: {https: false, max_concurrent_sessions: 2}
             stt:
               provider: faster_whisper
-              model_size: base
+              variant: base
               kwargs: {compute_type: int8, cpu_threads: 1}
             tts: {provider: kokoro_fastapi}
             """,
@@ -154,7 +154,7 @@ class LoaderProfileTests(unittest.TestCase):
                 registry, merged_catalog = load_app_catalog(catalog.catalog_path)
             demo = registry.get("demo")
             self.assertEqual(demo.config["stt"]["provider"], "mlx")
-            self.assertEqual(demo.config["stt"]["model_size"], "turbo")
+            self.assertEqual(demo.config["stt"]["variant"], "turbo")
             self.assertEqual(demo.config["tts"]["provider"], "kokoro_onnx")
             self.assertTrue(demo.config["server"]["https"])
             self.assertEqual(demo.config["app"]["name"], "demo")
