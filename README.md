@@ -141,10 +141,10 @@ still defines what data it can read or change.
 If that optional package is unavailable when LLM control is requested, Mulive
 emits a runtime warning and continues with transcript echo.
 
-The web quickstart uses Faster-Whisper `small` for recognition. Add
-`--tts-browser` or `--tts-local` to send speech output through the browser or
-the server's speakers. Override the recognition model with `--model-variant`, use
-`--stt-provider mlx` on Apple Silicon, and change Groq's model with
+The web quickstart uses Faster-Whisper `small` for recognition and sends speech output to browser. Add
+`--tts-local` to send speech output to the server's speakers. 
+Override the recognition model with `--model-variant`, use
+`--stt-provider mlx --model-variant turbo` on Apple Silicon, and change LLM model with
 `--llm-model`. Change the model timeout with `--llm-timeout-s`.
 
 ## Embed in FastAPI
